@@ -1,6 +1,7 @@
 ﻿using Jyuno;
 using JyunoSdk.Analysis;
 using JyunoSdk.LanguageServer;
+using JyunoSdk.NativeJs;
 
 namespace JyunoSdk.Cli;
 
@@ -13,6 +14,9 @@ public static class Program
   jyuno                          대화형 프롬프트(REPL)를 실행합니다.
   jyuno <파일> [옵션]            스크립트 파일을 실행합니다.
   jyuno run <파일> [옵션]        스크립트 파일을 실행합니다.
+  jyuno <파일> --native-js [출력 파일]
+                                 실행하지 않고 JavaScript(Native JS)로 변환합니다.
+                                 (출력 파일을 생략하면 스크립트 이름의 확장자를 .js로 바꾼 파일)
   jyuno check <파일...> [옵션]   스크립트를 실행하지 않고 문법/이름 문제를 검사합니다.
   jyuno format <파일...> [--write] [--spaces <n>]
                                  블록 구조에 맞춰 들여쓰기를 정리합니다. (--write: 파일에 저장)
@@ -22,7 +26,8 @@ public static class Program
 옵션:
   --file, -file                  파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
   --commands <묶음,...>          사용할 명령어 묶음 (console, math, file, default, all)
-  --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름";
+  --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름
+  --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)";
 
     public static int Main(string[] args)
     {
@@ -71,7 +76,7 @@ public static class Program
         public UsageException(string message) : base(message) { }
     }
 
-    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces);
+    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput);
 
     static Arguments Parse(string[] args , CommandGroups commands)
     {
@@ -79,6 +84,8 @@ public static class Program
         List<string> hosts = new();
         bool write = false;
         int? spaces = null;
+        bool native_js = false;
+        string? native_js_output = null;
         for (int i = 0 ; i < args.Length ; i++)
         {
             string arg = args[i];
@@ -109,6 +116,12 @@ public static class Program
                 case "--host":
                     hosts.AddRange(value().Split(',' , StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
+                case "--native-js" or "-native-js":
+                    native_js = true;
+                    //다음 인자가 옵션이 아니고, .js 파일이거나 스크립트 파일을 이미 받았다면 출력 파일 이름
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith('-') && (is_js(args[i + 1]) || files.Count > 0))
+                        native_js_output = args[++i];
+                    break;
                 case "--write" or "-w":
                     write = true;
                     break;
@@ -122,8 +135,10 @@ public static class Program
                     break;
             }
         }
-        return new(files , commands , hosts , write , spaces);
+        return new(files , commands , hosts , write , spaces , native_js , native_js_output);
     }
+
+    static bool is_js(string path) => Path.GetExtension(path).ToLowerInvariant() is ".js" or ".mjs" or ".cjs";
 
     static Runtime.AddJyunoCommandType ToRuntime(CommandGroups groups) => (Runtime.AddJyunoCommandType)(int)groups;
 
@@ -139,6 +154,8 @@ public static class Program
             return 1;
         }
         Runtime runtime = new(ToRuntime(parsed.Commands));
+        if (parsed.NativeJs)
+            return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands);
         using Interpreter interpreter = runtime.Create(File.ReadAllLines(path));
         try
         {
@@ -155,6 +172,24 @@ public static class Program
             Console.Error.WriteLine($"{path}: 오류: {e.Message}");
             return 1;
         }
+    }
+
+    //Jyuno 코드를 JavaScript로 변환해서 저장 (실행하지 않음)
+    static int ExportNativeJs(string path , string output , Runtime runtime , CommandGroups commands)
+    {
+        if (commands.HasFlag(CommandGroups.File))
+            Console.Error.WriteLine("경고: Native JS는 파일/디렉터리 명령어(file.*, directory.*)를 지원하지 않습니다.");
+        string source = File.ReadAllText(path);
+        var result = NativeJsCompiler.Compile(source , new NativeJsOptions { Globals = runtime.GetGlobals() , Name = Path.GetFileName(path) });
+        if (!result.Success)
+        {
+            foreach (var error in result.Errors)
+                Console.Error.WriteLine($"{path}:{error.Line + 1}: 오류: {error.Message}");
+            return 1;
+        }
+        File.WriteAllText(output , result.Code , new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"{path} → {output} (Native JS, 실행: node {output})");
+        return 0;
     }
 
     static int Check(string[] args)
