@@ -596,6 +596,466 @@ const mathFunctions = {
 };
 const mathConstants = { 'math.pi': Math.PI, 'math.nan': NaN, 'math.tau': 2 * Math.PI };
 
+// ───────────── 난수 (math.random, math.csprng, Jyuno 1.4.1) ─────────────
+// 인자 규칙: (없음) → [0, 1) 실수, max → [0, max), min max → [min, max) (둘다 정수면 정수, 아니면 실수)
+const TWO64 = 1n << 64n;
+let cryptoSource;
+function secureBytes(n) {
+  if (cryptoSource === undefined) {
+    cryptoSource = null;
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') cryptoSource = globalThis.crypto;
+    else if (typeof require === 'function') { try { cryptoSource = require('crypto').webcrypto; } catch (e) { cryptoSource = null; } }
+  }
+  if (!cryptoSource) throw err('math.csprng: 이 환경에서는 암호학적으로 안전한 난수 생성기(crypto.getRandomValues)를 쓸수 없습니다.');
+  return cryptoSource.getRandomValues(new Uint32Array(n));
+}
+const fastSource = {
+  real: () => Math.random(),
+  bits64: () => (BigInt(Math.floor(Math.random() * 4294967296)) << 32n) | BigInt(Math.floor(Math.random() * 4294967296)),
+};
+const secureSource = {
+  // 상위 53비트로 [0, 1) 실수
+  real: () => { const w = secureBytes(2); return ((w[0] >>> 5) * 67108864 + (w[1] >>> 6)) / 9007199254740992; },
+  bits64: () => { const w = secureBytes(2); return (BigInt(w[0]) << 32n) | BigInt(w[1]); },
+};
+function randomFunction(name, source) {
+  const realArgOf = (v) => {
+    if (v === null) throw nullError();
+    const r = tryReal(v);
+    if (r === undefined) throw err(`${name}: '${show(v)}'은/는 숫자가 아닙니다.`);
+    return r;
+  };
+  const integer = (min, max) => {
+    if (min >= max) throw err(`${name}: 범위가 비어있습니다. (최솟값 ${min}이/가 최댓값 ${max}보다 작아야 합니다)`);
+    if (source === fastSource && typeof min === 'number' && typeof max === 'number' && max - min <= MAXS) return min + Math.floor(Math.random() * (max - min));
+    const range = BigInt(max) - BigInt(min);
+    // 2^64를 range로 나눈 나머지보다 작은 값을 버려서 치우침 없이 뽑음 (Jyuno와 같은 방법)
+    const threshold = (TWO64 - range) % range;
+    for (;;) {
+      const bits = source.bits64();
+      if (bits >= threshold) return big2(BigInt(min) + bits % range);
+    }
+  };
+  const real = (min, max) => {
+    if (!isFinite(min) || !isFinite(max)) throw err(`${name}: 범위는 유한한 숫자여야 합니다.`);
+    if (min >= max) throw err(`${name}: 범위가 비어있습니다. (최솟값 ${fmtDouble(min)}이/가 최댓값 ${fmtDouble(max)}보다 작아야 합니다)`);
+    for (;;) {
+      const u = source.real();
+      const r = (1 - u) * min + u * max;
+      if (r >= min && r < max) return D(r);
+    }
+  };
+  return (args) => {
+    if (args.length === 0) return D(source.real());
+    if (args.length === 1) {
+      const max = tryInt(args[0]);
+      return max !== undefined ? integer(0, max) : real(0, realArgOf(args[0]));
+    }
+    const min = tryInt(args[0]), max = tryInt(args[1]);
+    if (min !== undefined && max !== undefined) return integer(min, max);
+    return real(realArgOf(args[0]), realArgOf(args[1]));
+  };
+}
+mathFunctions['math.random'] = randomFunction('math.random', fastSource);
+mathFunctions['math.csprng'] = randomFunction('math.csprng', secureSource);
+
+// ───────────── 컬렉션 함수 (array.*, list.*, Jyuno 1.4.1~1.4.2의 Collections.cs) ─────────────
+const MAX_LENGTH = 2147483591; // C#의 Array.MaxLength
+function colTarget(args, name) {
+  if (args.length === 0) throw err(`${name}: 배열/리스트가 필요합니다.`);
+  const v = args[0];
+  if (v instanceof JList) return v;
+  if (v === null) throw nullError();
+  throw err(`${name}: '${show(v)}'은/는 배열/리스트가 아닙니다.`);
+}
+function resizable(list, name) {
+  if (list.fixed) throw err(`${name}: 길이를 바꿀수 없는 컬렉션(배열 등)입니다. list로 만든 리스트를 사용하세요.`);
+}
+// 정수 인자 (min ~ max)
+function intArg(v, what, min, max, name) {
+  const i = tryInt(v);
+  if (i === undefined) throw err(`${name}: ${what}은/는 정수여야 합니다. ('${show(v)}')`);
+  if (i < min || i > max) throw err(`${name}: ${what} ${i}은/는 범위(${min} ~ ${max})를 벗어났습니다.`);
+  return Number(i);
+}
+function fitOrThrow(list, v, name) {
+  const f = fit(v, list.e);
+  if (f === NOFIT) throw err(`${name}: '${show(v)}'은/는 이 컬렉션의 원소 타입(${ELEM_NAME[list.e]})에 넣을수 없습니다.`);
+  return f;
+}
+// sort의 비교: less/greater와 같은 기준, NaN은 가장 앞
+function sortCompare(a, b) {
+  const o = compare(a, b);
+  if (o !== null) return o;
+  const ra = tryReal(a), rb = tryReal(b);
+  const na = ra !== undefined && ra !== ra, nb = rb !== undefined && rb !== rb;
+  return na === nb ? 0 : na ? -1 : 1;
+}
+// 안정 정렬 (Jyuno와 같은 병합 정렬: 비교 순서가 같아야 비교할수 없는 값의 오류 메시지도 같음)
+function mergeSort(items, buffer, start, end, sign) {
+  if (end - start < 2) return;
+  const middle = (start + end) >> 1;
+  mergeSort(items, buffer, start, middle, sign);
+  mergeSort(items, buffer, middle, end, sign);
+  if (sign * sortCompare(items[middle - 1], items[middle]) <= 0) return;
+  for (let i = start; i < end; i++) buffer[i] = items[i];
+  let left = start, right = middle, at = start;
+  while (left < middle && right < end) items[at++] = sign * sortCompare(buffer[right], buffer[left]) < 0 ? buffer[right++] : buffer[left++];
+  while (left < middle) items[at++] = buffer[left++];
+  while (right < end) items[at++] = buffer[right++];
+}
+function colIndexOf(args, name) {
+  const list = colTarget(args, name);
+  if (args.length < 2) throw err(`${name}: 찾을 값이 필요합니다.`);
+  const a = list.a;
+  for (let i = 0; i < a.length; i++) if (same(a[i], args[1])) return i;
+  return -1;
+}
+function colRange(args, array, name) {
+  if (args.length === 0) throw err(`${name}: 범위가 필요합니다.`);
+  const integer = (i, what) => {
+    const v = tryInt(args[i]);
+    if (v === undefined) throw err(`${name}: ${what}은/는 정수여야 합니다. ('${show(args[i])}')`);
+    return BigInt(v);
+  };
+  let start = 0n, end, step = 1n;
+  if (args.length === 1) end = integer(0, '끝');
+  else {
+    start = integer(0, '시작');
+    end = integer(1, '끝');
+    if (args.length > 2) step = integer(2, '간격');
+  }
+  if (step === 0n) throw err(`${name}: 간격은 0이 될수 없습니다.`);
+  let count = 0n;
+  if (step > 0n && start < end) count = (end - start - 1n) / step + 1n;
+  else if (step < 0n && start > end) count = (start - end - 1n) / -step + 1n;
+  if (count > BigInt(MAX_LENGTH)) throw err(`${name}: 원소가 너무 많습니다. (${count}개)`);
+  const n = Number(count), items = new Array(n);
+  const last = start + (count - 1n) * step;
+  if (n > 0 && start >= -BMAX && start <= BMAX && last >= -BMAX && last <= BMAX) {
+    const s = Number(start), d = Number(step);
+    for (let i = 0; i < n; i++) items[i] = s + i * d;
+  } else {
+    for (let i = 0; i < n; i++) items[i] = big2(start + BigInt(i) * step);
+  }
+  return new JList('long', array, items);
+}
+function addCollectionBuiltins() {
+  for (const kind of ['array', 'list']) {
+    const array = kind === 'array';
+    const f = (n, fn) => { const name = `${kind}.${n}`; builtins[name] = (args) => fn(args, name); };
+    f('sort', (args, name) => {
+      const list = colTarget(args, name);
+      const sign = args.length > 1 && truthy(args[1]) ? -1 : 1;
+      const items = list.a.slice();
+      mergeSort(items, new Array(items.length), 0, items.length, sign);
+      for (let i = 0; i < items.length; i++) list.a[i] = items[i];
+      return list;
+    });
+    f('reverse', (args, name) => { const list = colTarget(args, name); list.a.reverse(); return list; });
+    f('shuffle', (args, name) => {
+      const list = colTarget(args, name);
+      const a = list.a;
+      for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
+      return list;
+    });
+    f('contains', (args, name) => colIndexOf(args, name) >= 0);
+    f('indexof', colIndexOf);
+    f('slice', (args, name) => {
+      const list = colTarget(args, name);
+      if (args.length < 2) throw err(`${name}: 시작 인덱스가 필요합니다.`);
+      const len = list.a.length;
+      const start = intArg(args[1], '시작 인덱스', 0, len, name);
+      const end = args.length > 2 ? intArg(args[2], '끝 인덱스', start, len, name) : len;
+      return createLike(list, list.a.slice(start, end));
+    });
+    f('join', (args, name) => {
+      const list = colTarget(args, name);
+      const separator = args.length > 1 ? str(args[1]) : '';
+      return list.a.map(str).join(separator);
+    });
+    f('new', (args, name) => {
+      if (args.length === 0) throw err(`${name}: 길이가 필요합니다.`);
+      const length = intArg(args[0], '길이', 0, MAX_LENGTH, name);
+      const items = new Array(length).fill(args.length > 1 ? args[1] : null);
+      return array ? newArray(items) : newList(items);
+    });
+    // 1.4.2
+    f('copy', (args, name) => { const list = colTarget(args, name); return createLike(list, list.a.slice()); });
+    f('lastindexof', (args, name) => {
+      const list = colTarget(args, name);
+      if (args.length < 2) throw err(`${name}: 찾을 값이 필요합니다.`);
+      const a = list.a;
+      for (let i = a.length - 1; i >= 0; i--) if (same(a[i], args[1])) return i;
+      return -1;
+    });
+    f('count', (args, name) => {
+      const list = colTarget(args, name);
+      if (args.length < 2) throw err(`${name}: 셀 값이 필요합니다.`);
+      let n = 0;
+      for (const x of list.a) if (same(x, args[1])) n++;
+      return n;
+    });
+    f('distinct', (args, name) => {
+      const list = colTarget(args, name);
+      const seen = new Set(), items = [];
+      for (const x of list.a) {
+        const k = sameKey(x);
+        if (k === null) { items.push(x); continue; } // NaN은 어떤 값과도 같지 않음
+        if (!seen.has(k)) { seen.add(k); items.push(x); }
+      }
+      return createLike(list, items);
+    });
+    f('binary_search', (args, name) => {
+      const list = colTarget(args, name);
+      if (args.length < 2) throw err(`${name}: 찾을 값이 필요합니다.`);
+      const a = list.a;
+      let low = 0, high = a.length;
+      while (low < high) {
+        const middle = low + ((high - low) >> 1);
+        if (sortCompare(a[middle], args[1]) < 0) low = middle + 1; else high = middle;
+      }
+      if (low < a.length && sortCompare(a[low], args[1]) === 0) return low;
+      return -low - 1;
+    });
+    f('fill', (args, name) => {
+      const list = colTarget(args, name);
+      const v = fitOrThrow(list, args.length > 1 ? args[1] : null, name);
+      list.a.fill(v);
+      return list;
+    });
+    const extreme = (sign) => (args, name) => {
+      const list = colTarget(args, name);
+      const a = list.a;
+      if (a.length === 0) throw err(`${name}: 빈 컬렉션입니다.`);
+      let best = a[0];
+      for (let i = 1; i < a.length; i++) if (sign * sortCompare(a[i], best) > 0) best = a[i];
+      return best;
+    };
+    f('min', extreme(-1));
+    f('max', extreme(1));
+    f('sum', (args, name) => {
+      const list = colTarget(args, name);
+      let sum = 0;
+      for (const x of list.a) {
+        if (tryReal(x) === undefined) throw err(`${name}: '${show(x)}'은/는 숫자가 아닙니다.`);
+        sum = vadd(sum, x);
+      }
+      return sum;
+    });
+    f('range', (args, name) => colRange(args, array, name));
+  }
+  const l = (n, fn) => { const name = `list.${n}`; builtins[name] = (args) => fn(args, name); };
+  l('push', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    const values = [];
+    for (let i = 1; i < args.length; i++) values.push(fitOrThrow(list, args[i], name));
+    for (const v of values) list.a.push(v);
+    return list;
+  });
+  l('pop', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    if (list.a.length === 0) throw err(`${name}: 빈 리스트에서 원소를 꺼낼수 없습니다.`);
+    return list.a.pop();
+  });
+  l('insert', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    if (args.length < 3) throw err(`${name}: 리스트, 인덱스, 값이 필요합니다.`);
+    const at = intArg(args[1], '인덱스', 0, list.a.length, name);
+    list.a.splice(at, 0, fitOrThrow(list, args[2], name));
+    return list;
+  });
+  l('removeat', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    if (args.length < 2) throw err(`${name}: 제거할 인덱스가 필요합니다.`);
+    if (list.a.length === 0) throw err(`${name}: 빈 리스트에서 원소를 제거할수 없습니다.`);
+    const at = intArg(args[1], '인덱스', 0, list.a.length - 1, name);
+    return list.a.splice(at, 1)[0];
+  });
+  l('remove', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    const at = colIndexOf(args, name);
+    if (at < 0) return false;
+    list.a.splice(at, 1);
+    return true;
+  });
+  l('clear', (args, name) => {
+    const list = colTarget(args, name);
+    resizable(list, name);
+    list.a.length = 0;
+    return list;
+  });
+}
+addCollectionBuiltins();
+
+// ───────────── 문자열 함수 (string.*, Jyuno 1.4.2의 Strings.cs) ─────────────
+// 찾기/비교는 서수(UTF-16 코드) 기준: JS의 문자열 비교/indexOf와 같음
+// 공백 문자: C#의 char.IsWhiteSpace (JS의 \s와 다름: U+0085 포함, U+FEFF 제외)
+const WHITESPACE = new Set([0x9, 0xa, 0xb, 0xc, 0xd, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000]);
+const WHITESPACE_RE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+// C#의 ToUpperInvariant/ToLowerInvariant: 한 글자를 한 글자로 바꾸는 단순 대소문자 변환
+// (JS의 toUpperCase는 'ß' → 'SS'처럼 길이가 바뀌는 변환도 하므로, 한 글자로 바뀌는 경우만 사용하고 .NET과 다른 글자는 따로 지정)
+const UPPER_FIX = new Map([[0x131, 0x131], [0x17f, 0x17f], [0x1fb3, 0x1fbc], [0x1fc3, 0x1fcc], [0x1ff3, 0x1ffc]]);
+for (const base of [0x1f80, 0x1f90, 0x1fa0]) for (let i = 0; i < 8; i++) UPPER_FIX.set(base + i, base + 8 + i);
+function invariantCase(s, upper) {
+  if (/^[\x00-\x7f]*$/.test(s)) return upper ? s.toUpperCase() : s.toLowerCase();
+  let out = '';
+  for (const ch of s) {
+    if (upper) {
+      const fixed = UPPER_FIX.get(ch.codePointAt(0));
+      if (fixed !== undefined) { out += String.fromCodePoint(fixed); continue; }
+    }
+    const m = upper ? ch.toUpperCase() : ch.toLowerCase();
+    out += m.length === ch.length && m.codePointAt(0) !== undefined && String.fromCodePoint(m.codePointAt(0)) === m ? m : ch;
+  }
+  return out;
+}
+function addStringBuiltins() {
+  const need = (args, n, name) => { if (args.length < n) throw err(`${name}: 인자가 ${n}개 이상 필요합니다.`); };
+  const text = (args, i, name) => {
+    const v = args[i];
+    if (typeof v === 'string') return v;
+    if (v === null) throw nullError();
+    throw err(`${name}: '${show(v)}'은/는 문자열이 아닙니다.`);
+  };
+  const textOrNull = (args, i, name) => (args[i] === null ? null : text(args, i, name));
+  const trimBy = (s, set, start, end) => {
+    let a = 0, b = s.length;
+    if (start) while (a < b && set.has(s.charCodeAt(a))) a++;
+    if (end) while (b > a && set.has(s.charCodeAt(b - 1))) b--;
+    return s.slice(a, b);
+  };
+  const trim = (start, end) => (args, name) => {
+    need(args, 1, name);
+    const s = text(args, 0, name);
+    const chars = args.length > 1 ? text(args, 1, name) : null;
+    let set = WHITESPACE;
+    if (chars !== null && chars.length > 0) { set = new Set(); for (let i = 0; i < chars.length; i++) set.add(chars.charCodeAt(i)); }
+    return trimBy(s, set, start, end);
+  };
+  const pad = (left) => (args, name) => {
+    need(args, 2, name);
+    const s = text(args, 0, name);
+    const width = intArg(args[1], '길이', 0, MAX_LENGTH, name);
+    let fill = ' ';
+    if (args.length > 2) {
+      const c = text(args, 2, name);
+      if (c.length !== 1) throw err(`${name}: 채울 글자는 한 글자여야 합니다. ('${c}')`);
+      fill = c;
+    }
+    return left ? s.padStart(width, fill) : s.padEnd(width, fill);
+  };
+  const functions = {
+    concat: (args) => args.map(str).join(''),
+    join: (args, name) => {
+      need(args, 1, name);
+      const separator = str(args[0]);
+      if (args.length === 2 && args[1] instanceof JList) return args[1].a.map(str).join(separator);
+      return args.slice(1).map(str).join(separator);
+    },
+    format: (args, name) => {
+      need(args, 1, name);
+      const format = text(args, 0, name);
+      try { return composite(format, args.slice(1)); } catch (e) {
+        if (e instanceof FormatError) throw err(`${name}: 형식 문자열이 올바르지 않습니다: "${format}"`);
+        throw e;
+      }
+    },
+    compare: (args, name) => {
+      need(args, 2, name);
+      const a = textOrNull(args, 0, name), b = textOrNull(args, 1, name);
+      if (a === b) return 0;
+      if (a === null) return -1;
+      if (b === null) return 1;
+      return a < b ? -1 : 1;
+    },
+    equals: (args, name) => {
+      need(args, 2, name);
+      const a = textOrNull(args, 0, name), b = textOrNull(args, 1, name);
+      if (args.length > 2 && truthy(args[2])) return a === null || b === null ? a === b : invariantCase(a, true) === invariantCase(b, true);
+      return a === b;
+    },
+    isnullorempty: (args, name) => { need(args, 1, name); const s = textOrNull(args, 0, name); return s === null || s === ''; },
+    isnullorwhitespace: (args, name) => {
+      need(args, 1, name);
+      const s = textOrNull(args, 0, name);
+      if (s === null) return true;
+      for (let i = 0; i < s.length; i++) if (!WHITESPACE.has(s.charCodeAt(i))) return false;
+      return true;
+    },
+    indexof: (args, name) => {
+      need(args, 2, name);
+      const s = text(args, 0, name), value = text(args, 1, name);
+      const start = args.length > 2 ? intArg(args[2], '시작 인덱스', 0, s.length, name) : 0;
+      return s.indexOf(value, start);
+    },
+    lastindexof: (args, name) => { need(args, 2, name); return text(args, 0, name).lastIndexOf(text(args, 1, name)); },
+    contains: (args, name) => { need(args, 2, name); return text(args, 0, name).includes(text(args, 1, name)); },
+    startswith: (args, name) => { need(args, 2, name); return text(args, 0, name).startsWith(text(args, 1, name)); },
+    endswith: (args, name) => { need(args, 2, name); return text(args, 0, name).endsWith(text(args, 1, name)); },
+    replace: (args, name) => {
+      need(args, 3, name);
+      const s = text(args, 0, name), old = text(args, 1, name);
+      if (old.length === 0) throw err(`${name}: 바꿀 문자열은 빈 문자열일수 없습니다.`);
+      return s.split(old).join(textOrNull(args, 2, name) ?? '');
+    },
+    substring: (args, name) => {
+      need(args, 2, name);
+      const s = text(args, 0, name);
+      const start = intArg(args[1], '시작 인덱스', 0, s.length, name);
+      const length = args.length > 2 ? intArg(args[2], '길이', 0, s.length - start, name) : s.length - start;
+      return s.slice(start, start + length);
+    },
+    insert: (args, name) => {
+      need(args, 3, name);
+      const s = text(args, 0, name);
+      const at = intArg(args[1], '인덱스', 0, s.length, name);
+      return s.slice(0, at) + text(args, 2, name) + s.slice(at);
+    },
+    remove: (args, name) => {
+      need(args, 2, name);
+      const s = text(args, 0, name);
+      const start = intArg(args[1], '시작 인덱스', 0, s.length, name);
+      const count = args.length > 2 ? intArg(args[2], '개수', 0, s.length - start, name) : s.length - start;
+      return s.slice(0, start) + s.slice(start + count);
+    },
+    toupper: (args, name) => { need(args, 1, name); return invariantCase(text(args, 0, name), true); },
+    tolower: (args, name) => { need(args, 1, name); return invariantCase(text(args, 0, name), false); },
+    trim: trim(true, true),
+    trimstart: trim(true, false),
+    trimend: trim(false, true),
+    padleft: pad(true),
+    padright: pad(false),
+    split: (args, name) => {
+      need(args, 1, name);
+      const s = text(args, 0, name);
+      if (args.length === 1) return new JList('string', true, s.split(WHITESPACE_RE));
+      const separator = text(args, 1, name);
+      return new JList('string', true, separator === '' ? [s] : s.split(separator));
+    },
+    tochararray: (args, name) => { need(args, 1, name); return new JList('string', true, text(args, 0, name).split('')); },
+    charcode: (args, name) => {
+      need(args, 1, name);
+      const s = text(args, 0, name);
+      if (s.length === 0) throw err(`${name}: 빈 문자열입니다.`);
+      const at = args.length > 1 ? intArg(args[1], '인덱스', 0, s.length - 1, name) : 0;
+      return s.charCodeAt(at);
+    },
+    fromcharcode: (args, name) => {
+      let out = '';
+      for (const v of args) out += String.fromCharCode(intArg(v, '문자 코드', 0, 65535, name));
+      return out;
+    },
+  };
+  for (const [n, fn] of Object.entries(functions)) { const name = `string.${n}`; builtins[name] = (args) => fn(args, name); }
+}
+addStringBuiltins();
+
 // ───────────── 복합 서식 (string.Format) ─────────────
 class FormatError extends Error {}
 function composite(format, args) {
