@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Jyuno 코드 분석기 (토큰, 블록 구조, 이름 해석, 진단, 내장 명령어 문서) -->
+  <PropertyGroup>
+    <RootNamespace>JyunoSdk.Analysis</RootNamespace>
+    <PackageId>JyunoSdk.Analysis</PackageId>
+    <Description>Jyuno 스크립트를 실행하지 않고 분석합니다. (토큰, 블록 구조, 이름 해석, 진단, 포맷팅)</Description>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(JyunoSource)' == ''">
+    <PackageReference Include="Jyuno" Version="$(JyunoVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(JyunoSource)' != ''">
+    <ProjectReference Include="$(JyunoSourcePath)" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,31 @@
+<Project>
+
+  <!-- 모든 프로젝트에 공통으로 적용되는 설정 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Version>0.1.0</Version>
+    <Authors>jyunrcaea</Authors>
+    <Company>jyunrcaea</Company>
+    <Product>JyunoSdk</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/jyunrcaea/JyunoSdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jyunrcaea/JyunoSdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <!--
+    사용할 Jyuno 버전 (NuGet 패키지)
+    로컬에서 고치고 있는 Jyuno 소스로 빌드하려면 JyunoSource에 Jyuno.csproj 경로를 넘기세요.
+      dotnet build -p:JyunoSource=../Jyuno/Jyuno.csproj
+  -->
+  <PropertyGroup>
+    <JyunoVersion>1.3.2</JyunoVersion>
+    <JyunoSource></JyunoSource>
+    <!-- 상대 경로는 이 파일(저장소 최상위) 기준 -->
+    <JyunoSourcePath Condition="'$(JyunoSource)' != ''">$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('$(MSBuildThisFileDirectory)', '$(JyunoSource)'))))</JyunoSourcePath>
+  </PropertyGroup>
+
+</Project>

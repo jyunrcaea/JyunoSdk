@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Jyuno 언어 서버 (Language Server Protocol, 표준 입출력 JSON-RPC) -->
+  <PropertyGroup>
+    <RootNamespace>JyunoSdk.LanguageServer</RootNamespace>
+    <PackageId>JyunoSdk.LanguageServer</PackageId>
+    <Description>Jyuno 언어 서버 (LSP). VS Code 등 LSP를 지원하는 편집기에서 진단, 자동 완성, 정의로 이동 등을 제공합니다.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JyunoSdk.Analysis\JyunoSdk.Analysis.csproj" />
+  </ItemGroup>
+
+</Project>
