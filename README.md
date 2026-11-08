@@ -1,24 +1,176 @@
-# JyunoPrompt
+# JyunoSdk
 
-[Jyuno](https://github.com/jyunrcaea/Jyuno)를 실행하기 위한 프로그램.  
-Jyuno 언어를 실행해볼수 있습니다.
+[Jyuno](https://github.com/jyunrcaea/Jyuno) 언어를 위한 SDK 입니다. (이전 이름: JyunoPrompt)
 
-# 실행
-## 프롬프트
-(아무런 인자 없이) 프로그램을 실행하면 됩니다.  
-![image](https://github.com/jyunrcaea/JyunoPrompt/assets/71429443/88a17c80-22dd-437d-9d1a-f4782962d8da)
+`jyuno` 명령어 하나로 다음을 제공합니다.
 
-## 파일
-파일 경로를 인자로 넘겨 실행하세요.  
-![image](https://github.com/jyunrcaea/JyunoPrompt/assets/71429443/baa3dac6-ec38-4fbf-9d76-fa6c5f9d59ec)
+- **대화형 프롬프트(REPL)**: 한 줄씩 실행하고, `if`/`while`/`repeat`/`for`/`func` 블록도 여러 줄로 입력할수 있습니다.
+- **스크립트 실행/검사/정리**: `jyuno run`, `jyuno check`, `jyuno format`
+- **언어 서버(LSP)**: `jyuno lsp` — VS Code 등 LSP를 지원하는 편집기에서 진단, 자동 완성, 정의로 이동 등을 제공합니다.
 
-# 추가된 명령어
-(프롬프트에서만 제공됩니다.)
-- exit : 프롬프트를 나갑니다.
-- execute (파일 경로) : 파일을 실행합니다.
-- history : 지금까지 입력된 명령어를 반환합니다.
-- eval (명령어) : 명령을 실행합니다.
-- help : 기본적인 명령어에 대한 설명을 반환합니다.
-- (변수) .input : 입력 텍스트('>>>')를 수정할수 있습니다.
-- (변수) .return : 반환 텍스트('Return: {0}')를 수정할수 있습니다.
-- (변수) .error : 에러 텍스트('Error: {0}')를 수정할수 있습니다.
+## 구성
+
+| 프로젝트 | 설명 |
+| --- | --- |
+| `src/JyunoSdk.Analysis` | 실행하지 않고 Jyuno 코드를 분석하는 라이브러리 (위치가 있는 토큰, 블록 구조, 변수 영역, 이름 해석, 진단, 포맷팅, 내장 명령어 문서) |
+| `src/JyunoSdk.LanguageServer` | Language Server Protocol 3.17 구현 (표준 입출력 JSON-RPC, 외부 의존성 없음) |
+| `src/JyunoSdk.Cli` | `jyuno` 명령어 (REPL, run, check, format, lsp) |
+| `tests/JyunoSdk.Tests` | 테스트 |
+
+Jyuno 인터프리터는 NuGet의 [`Jyuno`](https://www.nuget.org/packages/Jyuno) 패키지를 사용합니다. (버전은 `Directory.Build.props`의 `JyunoVersion`)
+
+## 설치
+
+### 실행 파일 (권장)
+[Releases](https://github.com/jyunrcaea/JyunoSdk/releases)에서 운영체제에 맞는 `jyuno` 파일을 받으세요. .NET 설치 없이 실행됩니다.
+
+### dotnet tool
+```
+dotnet tool install -g JyunoSdk
+```
+
+### 소스에서 빌드
+.NET 8 SDK가 필요합니다.
+```
+dotnet run --project src/JyunoSdk.Cli
+```
+
+## 사용법
+
+```
+jyuno                          대화형 프롬프트(REPL)를 실행합니다.
+jyuno <파일> [옵션]            스크립트 파일을 실행합니다.
+jyuno run <파일> [옵션]        스크립트 파일을 실행합니다.
+jyuno check <파일...> [옵션]   스크립트를 실행하지 않고 문법/이름 문제를 검사합니다.
+jyuno format <파일...> [--write] [--spaces <n>]
+                               블록 구조에 맞춰 들여쓰기를 정리합니다.
+jyuno lsp                      Jyuno 언어 서버(LSP)를 표준 입출력으로 실행합니다.
+jyuno --version                버전을 출력합니다.
+
+옵션:
+  --file, -file                파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
+  --commands <묶음,...>        사용할 명령어 묶음 (console, math, file, default, all)
+  --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
+```
+
+### 대화형 프롬프트
+```
+>>> x = add 1 2
+>>> x
+3
+>>> func double
+... param n
+... return (mul n 2)
+... endfunc
+>>> double 21
+42
+>>> help math.pow
+```
+- `if`, `while`, `repeat`, `for`, `func`로 시작하면 블록이 `end`/`endfunc`로 닫힐 때까지 입력받은 다음 한번에 실행합니다. 블록 입력 중 `.cancel`을 입력하면 취소합니다.
+- 결과가 `null`이 아니라면 출력합니다. 배열/리스트는 `[1, 'a', 2.0]`처럼 보여줍니다.
+- `goto`는 프롬프트에서 쓸수 없습니다. (파일로 저장한 다음 `execute "파일"`로 실행하세요)
+
+프롬프트에서만 제공되는 명령어:
+- `exit` : 프롬프트를 나갑니다.
+- `help` / `help (이름)` : 도움말, 또는 함수/키워드 설명을 봅니다. (예: `help add`, `help for`)
+- `execute (파일 경로)` : 파일을 실행합니다.
+- `history` : 지금까지 입력한 줄을 반환합니다.
+- `eval (문자열)` : 문자열을 한 줄의 코드로 실행합니다.
+- `.input`, `.return`, `.error` (변수) : 입력 표시(`>>> `), 결과 서식(`{0}`), 오류 서식(`오류: {0}`)을 바꿀수 있습니다.
+- `.remove`, `.substitute` (변수) : 삭제/대입 연산 허용 여부
+- 프롬프트에서는 파일 명령어(`file.*`, `directory.*`)를 포함한 모든 명령어를 쓸수 있습니다.
+
+### 검사
+```
+$ jyuno check palindrome.jyuno
+palindrome.jyuno:6:21: warning JY2001: 'text.at'은/는 정의되지 않은 함수/변수입니다.
+오류 0개, 경고 1개
+```
+스크립트를 실행할 프로그램이 따로 추가하는 함수가 있다면 `--host text.at,other`로 알려주세요. 오류가 있으면 종료 코드 1을 반환합니다.
+
+## 언어 서버
+
+`jyuno lsp`는 표준 입출력으로 [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)을 주고받습니다. (`--stdio` 등 뒤에 붙는 인자는 무시합니다)
+
+### 제공하는 기능
+- **진단**: 문법 오류(닫히지 않은 문자열/괄호, end/endfunc 짝, else/break/param 위치, func/param/for/local 형식), 정의되지 않은 이름, 괄호 없이 인자로 넘긴 함수, 무시되는 연산자/토큰, `goto`로 함수 안팎 이동 등
+- **자동 완성**: 키워드, 블록 스니펫(`if … end`, `func … endfunc` 등), 지금 위치에서 보이는 변수/함수/파라미터, 내장 명령어(설명 포함)
+- **hover**: 내장 명령어 설명, 사용자 함수 시그니처, 변수 종류(지역/파라미터/레이블/상수 등)
+- **시그니처 도움말**: 내장 함수와 사용자 함수의 인자
+- **정의로 이동, 참조 찾기, 같은 이름 강조, 이름 바꾸기**: Jyuno의 영역 규칙(함수 지역 변수, `local`, `for` 반복 변수, 바깥 변수 대입)을 따름
+- **문서 심볼**(함수 안의 파라미터/지역 변수 포함), **접기**(블록), **포맷팅**(들여쓰기 정리)
+- **의미 토큰**(semantic highlighting): `keyword`, `function`, `variable`, `parameter`, `string`, `number`, `operator`, `label` / 수식자 `declaration`, `readonly`, `defaultLibrary`
+- **빠른 수정**: 괄호 없이 넘긴 함수 `add f 1` → `add (f) 1`, `return add 1 2` → `return (add 1 2)`
+
+### 설정
+`initializationOptions` 또는 `workspace/didChangeConfiguration`의 `jyuno` 항목으로 설정합니다.
+```json
+{
+  "commands": ["console", "math"],
+  "hostNames": ["text.at"],
+  "undefinedNames": true
+}
+```
+- `commands`: 스크립트를 실행할 프로그램이 제공하는 명령어 묶음. `"default"`(console, math), `"all"`, 또는 `["console", "math", "file"]` 같은 배열 (기본값 `"default"`)
+- `hostNames`: 프로그램이 `Runtime.AddFunction`/`AddVariable`로 추가하는 이름들
+- `undefinedNames`: 정의되지 않은 이름을 경고할지 (기본값 `true`)
+
+### 편집기에서 사용하기
+VS Code 확장은 [vscode-languageclient](https://www.npmjs.com/package/vscode-languageclient)로 `jyuno lsp`를 실행하면 됩니다.
+```ts
+const serverOptions = { command: "jyuno", args: ["lsp"] };
+const clientOptions = { documentSelector: [{ language: "jyuno" }] };
+new LanguageClient("jyuno", "Jyuno", serverOptions, clientOptions).start();
+```
+Neovim (0.11+):
+```lua
+vim.lsp.config('jyuno', { cmd = { 'jyuno', 'lsp' }, filetypes = { 'jyuno' } })
+vim.lsp.enable('jyuno')
+```
+
+### 진단 코드
+| 코드 | 심각도 | 설명 |
+| --- | --- | --- |
+| JY1001 | 오류 | 토큰화 오류 (닫히지 않은 문자열, long 범위를 넘는 정수) |
+| JY1002 | 오류 | 블록 구조 오류 (end/endfunc 짝, else, break, param 위치) |
+| JY1003 | 오류 | 닫히지 않은 괄호 |
+| JY1004 | 오류 | 키워드 형식 오류 (func/param/for/local) |
+| JY1005 | 오류 | 줄 맨 앞이 아닌 곳에 쓴 키워드 |
+| JY1006 | 오류 | goto로 함수 안팎을 넘나듦 |
+| JY2001 | 경고 | 정의되지 않은 함수/변수 |
+| JY2002 | 경고 | 함수를 괄호 없이 인자로 넘김 (값을 읽을수 없음) |
+| JY2003 | 경고 | 실행되지 않고 무시되는 토큰 |
+| JY2004 | 경고/오류 | if/while/repeat/goto/return의 값이 없거나 둘 이상 |
+| JY2005 | 경고 | 설정된 프로그램이 제공하지 않는 명령어 묶음 (예: file) |
+
+## 라이브러리로 사용하기
+`JyunoSdk.Analysis`는 Jyuno 코드를 실행하지 않고 분석합니다.
+```cs
+using JyunoSdk.Analysis;
+
+var document = JyunoDocument.Parse(File.ReadAllText("code.jyuno"), new AnalyzerOptions {
+    Commands = CommandGroups.Default,
+    HostNames = new[] { "text.at" },
+});
+foreach (var diagnostic in document.Diagnostics)
+    Console.WriteLine(diagnostic);
+```
+토큰화 결과는 Jyuno의 `Parser.Tokenizer`와 항상 같도록 테스트로 검증합니다.
+
+## 개발
+```
+dotnet test tests/JyunoSdk.Tests
+```
+NuGet 패키지 대신 로컬에서 고치고 있는 Jyuno 소스로 빌드하려면:
+```
+dotnet test tests/JyunoSdk.Tests -p:JyunoSource=../Jyuno/Jyuno.csproj
+```
+Jyuno에 새 내장 명령어가 추가되면 `src/JyunoSdk.Analysis/Builtins.cs`에 설명을 추가해야 합니다. (`BuiltinTests`가 알려줍니다)
+
+## 릴리즈
+``v1.2.3`` 형식의 태그를 푸시하면 GitHub Actions가 테스트 후 운영체제별 `jyuno` 실행 파일(Windows/Linux/macOS, x64/arm64)과 dotnet tool 패키지를 GitHub 릴리즈에 올리고, NuGet에 `JyunoSdk`를 배포합니다.
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+NuGet 배포는 [Trusted Publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing)을 사용합니다. nuget.org의 Trusted Publishing 정책(저장소 ``jyunrcaea/JyunoSdk``, 워크플로우 ``release.yml``, 환경 ``production``)을 먼저 만들어야 합니다.

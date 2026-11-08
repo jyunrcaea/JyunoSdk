@@ -1,0 +1,131 @@
+# v1.2.3 같은 태그를 푸시하면 테스트 → 운영체제별 jyuno 실행 파일 + dotnet tool 패키지 → GitHub 릴리즈 → NuGet 배포
+# 실행 파일은 .NET 설치 없이 실행되므로, VS Code 확장 등에서 언어 서버(jyuno lsp)로 그대로 사용할수 있음
+# NuGet 배포는 Trusted Publishing(OIDC)을 사용하므로 API 키 시크릿이 필요 없음
+# (nuget.org의 Trusted Publishing 정책: 저장소 jyunrcaea/JyunoSdk, 워크플로우 release.yml, 환경 production)
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # GitHub 릴리즈 생성
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: 태그에서 버전 읽기
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::태그 '$GITHUB_REF_NAME'는 v1.2.3 또는 v1.2.3-beta.1 형식이어야 합니다."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: 테스트
+        run: dotnet test tests/JyunoSdk.Tests -c Release
+
+  binaries:
+    needs: [ version, test ]
+    strategy:
+      matrix:
+        rid: [ win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64 ]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: 실행 파일 만들기 (${{ matrix.rid }})
+        run: |
+          dotnet publish src/JyunoSdk.Cli -c Release -r ${{ matrix.rid }} --self-contained \
+            -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none \
+            -p:Version=$VERSION -p:ContinuousIntegrationBuild=true -o publish
+          mkdir -p dist
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            mv publish/JyunoSdk.Cli.exe publish/jyuno.exe
+            (cd publish && zip -q "../dist/jyuno-$VERSION-${{ matrix.rid }}.zip" jyuno.exe)
+          else
+            mv publish/JyunoSdk.Cli publish/jyuno
+            chmod +x publish/jyuno
+            tar -czf "dist/jyuno-$VERSION-${{ matrix.rid }}.tar.gz" -C publish jyuno
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jyuno-${{ matrix.rid }}
+          path: dist/*
+
+  package:
+    needs: [ version, test ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: dotnet tool 패키지 만들기
+        run: dotnet pack src/JyunoSdk.Cli -c Release -o dist -p:Version=${{ needs.version.outputs.version }} -p:ContinuousIntegrationBuild=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: dist/*.nupkg
+
+  release:
+    needs: [ version, binaries, package ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: GitHub 릴리즈 만들기
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prerelease=""
+          if [[ "$VERSION" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "JyunoSdk $VERSION" --generate-notes $prerelease
+
+  nuget:
+    needs: [ version, package ]
+    runs-on: ubuntu-latest
+    # Trusted Publishing 정책의 Environment와 같아야 함
+    environment: production
+    permissions:
+      id-token: write  # NuGet Trusted Publishing용 OIDC 토큰 발급
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkg
+          path: dist
+      # OIDC 토큰으로 1시간짜리 임시 API 키를 받음 (만료되지 않도록 배포 직전에 실행)
+      - name: NuGet 로그인 (Trusted Publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: jyunrcaea  # nuget.org 프로필 이름 (이메일 아님)
+      - name: NuGet에 배포
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "dist/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
