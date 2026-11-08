@@ -1,0 +1,40 @@
+# docs/wiki 폴더의 문서를 GitHub 위키(JyunoSdk.wiki)에 그대로 올림
+# master에 docs/wiki가 바뀌어 푸시되거나, Actions 탭에서 직접 실행하면 동작
+# 위키는 이 폴더와 같아지도록 덮어쓰므로, 위키 문서는 이 폴더에서 고쳐 주세요
+name: Wiki
+
+on:
+  push:
+    branches: [ master ]
+    paths: [ 'docs/wiki/**' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 위키에 올리기
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.wiki.git" wiki
+          rsync -a --delete --exclude '.git' docs/wiki/ wiki/
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "위키가 이미 최신입니다."
+            exit 0
+          fi
+          git commit -m "docs/wiki 동기화 (${GITHUB_SHA::7})"
+          git push origin HEAD

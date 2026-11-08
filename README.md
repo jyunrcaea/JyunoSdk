@@ -152,6 +152,8 @@ vim.lsp.enable('jyuno')
 | JY2005 | 경고 | 설정된 프로그램이 제공하지 않는 명령어 묶음 (예: file) |
 
 ## Native JS
+> 소개, 사용법, 제약, 동작 원리, 연구 결과(성능과 호환성 검증)는 [위키](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS)에 자세히 정리되어 있습니다.
+
 Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno 런타임(값, 연산, console/math 명령어)이 들어 있어서, 다른 파일 없이 Node.js나 브라우저에서 실행됩니다.
 인터프리터와 같은 결과(출력, 반환값, 오류 메시지와 줄)를 내도록 차등 테스트로 검증했고, 반복문이나 함수 호출이 많은 코드에서 훨씬 빠릅니다.
 ```
@@ -184,6 +186,7 @@ const result = program.run({
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
+호스트 함수는 변환할 때도 그 이름을 알려줘야 합니다. (아래 라이브러리 예처럼 `Globals`에 넣지 않으면 "존재하지 않는 함수"로 변환됩니다)
 호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JyunoError`, `str`, `typeName` 등)을 사용합니다.
 
 ### 라이브러리
@@ -223,6 +226,9 @@ NuGet 패키지 대신 로컬에서 고치고 있는 Jyuno 소스로 빌드하�
 dotnet test tests/JyunoSdk.Tests -p:JyunoSource=../Jyuno/Jyuno.csproj
 ```
 Jyuno에 새 내장 명령어가 추가되면 `src/JyunoSdk.Analysis/Builtins.cs`에 설명을 추가해야 합니다. (`BuiltinTests`가 알려줍니다)
+
+## 위키
+[위키](https://github.com/jyunrcaea/JyunoSdk/wiki) 문서는 [`docs/wiki`](docs/wiki)에 있습니다. master에 푸시하면 Wiki 워크플로우([`wiki.yml`](.github/workflows/wiki.yml))가 위키에 그대로 올립니다. 위키를 직접 고치면 다음 동기화 때 덮어써지니 이 폴더에서 고쳐 주세요.
 
 ## 릴리즈
 ``v1.2.3`` 형식의 태그를 푸시하면 GitHub Actions가 테스트 후 운영체제별 `jyuno` 실행 파일(Windows/Linux/macOS, x64/arm64)과 NuGet 패키지를 GitHub 릴리즈에 올리고, NuGet에 `JyunoSdk`(dotnet tool), `JyunoSdk.Analysis`, `JyunoSdk.LanguageServer`, `JyunoSdk.NativeJs`를 배포합니다.
