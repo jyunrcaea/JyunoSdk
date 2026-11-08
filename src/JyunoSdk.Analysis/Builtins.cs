@@ -94,7 +94,7 @@ public static class Builtins
     static BuiltinSignature V(string? returns , params BuiltinParameter[] parameters) => new(parameters , returns , true);
 
     //설명 (이름 → 종류, 설명, 호출 형태)
-    static readonly Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> docs = new() {
+    static readonly Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> docs = with_more_docs(new() {
         ["null"] = (BuiltinKind.Constant , "값이 없음을 나타내는 상수입니다. Jyuno에서는 void 대신 null을 반환합니다." , Array.Empty<BuiltinSignature>()),
         ["true"] = (BuiltinKind.Constant , "참을 나타내는 상수입니다." , Array.Empty<BuiltinSignature>()),
         ["false"] = (BuiltinKind.Constant , "거짓을 나타내는 상수입니다." , Array.Empty<BuiltinSignature>()),
@@ -144,7 +144,78 @@ public static class Builtins
         ["directory.files"] = (BuiltinKind.Function , "디렉터리 안의 파일 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용합니다." , new[] { S("array") , S("array" , P("path" , "string")) }),
         ["directory.list"] = (BuiltinKind.Function , "디렉터리 안의 하위 디렉터리 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용합니다." , new[] { S("array") , S("array" , P("path" , "string")) }),
         ["directory.move"] = (BuiltinKind.Function , "디렉터리를 이동합니다." , new[] { S("bool" , P("source" , "string") , P("target" , "string")) }),
-    };
+    });
+
+    //Jyuno 1.4.1~1.4.2에서 추가된 난수, 컬렉션(array.*, list.*), 문자열(string.*) 함수
+    static Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> with_more_docs(Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> d)
+    {
+        void f(string name , string description , params BuiltinSignature[] signatures) => d[name] = (BuiltinKind.Function , description , signatures);
+        const string range_rule = "인자가 없으면 0 이상 1 미만의 실수, max만 있으면 [0, max), min max가 있으면 [min, max)에서 뽑습니다. 인자가 모두 정수면 정수, 실수가 섞이면 실수를 반환합니다.";
+        BuiltinSignature[] random = { S("double") , S("int|double" , P("max" , "int|double")) , S("int|double" , P("min" , "int|double") , P("max" , "int|double")) };
+        f("math.random" , "빠른 난수(System.Random)를 뽑습니다. " + range_rule , random);
+        f("math.csprng" , "암호학적으로 안전한 난수(RandomNumberGenerator)를 뽑습니다. 비밀번호, 토큰처럼 예측할수 없어야 하는 값에 사용하세요. " + range_rule , random);
+
+        foreach (string kind in new[] { "array" , "list" })
+        {
+            string k = kind , made = kind is "array" ? "배열" : "리스트";
+            BuiltinParameter c = P("collection" , "array|list");
+            f($"{k}.sort" , "오름차순으로 정렬합니다. 두번째 인자가 참이면 내림차순입니다. 같은 값의 순서는 유지(안정 정렬)하며, 원래 배열/리스트를 바꾸고 그대로 반환합니다." , S("array|list" , c) , S("array|list" , c , P("descending" , "bool")));
+            f($"{k}.reverse" , "순서를 뒤집습니다. 원래 배열/리스트를 바꾸고 그대로 반환합니다." , S("array|list" , c));
+            f($"{k}.shuffle" , "순서를 무작위로 섞습니다. 원래 배열/리스트를 바꾸고 그대로 반환합니다." , S("array|list" , c));
+            f($"{k}.contains" , "값과 같은(equal) 원소가 있으면 true를 반환합니다." , S("bool" , c , P("value" , "any")));
+            f($"{k}.indexof" , "값과 같은(equal) 첫 원소의 인덱스를 반환합니다. 없으면 -1입니다." , S("int" , c , P("value" , "any")));
+            f($"{k}.lastindexof" , "값과 같은(equal) 마지막 원소의 인덱스를 반환합니다. 없으면 -1입니다." , S("int" , c , P("value" , "any")));
+            f($"{k}.count" , "값과 같은(equal) 원소의 개수를 반환합니다." , S("int" , c , P("value" , "any")));
+            f($"{k}.slice" , "시작 인덱스부터 끝 인덱스 바로 앞까지(끝을 생략하면 마지막까지)의 원소로 새 배열/리스트를 만듭니다." , S("array|list" , c , P("start" , "int")) , S("array|list" , c , P("start" , "int") , P("end" , "int")));
+            f($"{k}.join" , "원소를 문자열로 바꿔서 구분자(생략하면 빈 문자열)로 이어붙입니다." , S("string" , c) , S("string" , c , P("separator" , "string")));
+            f($"{k}.new" , $"모든 원소가 값(생략하면 null)이고 길이가 length인 {made}을/를 만듭니다." , S(kind , P("length" , "int")) , S(kind , P("length" , "int") , P("value" , "any")));
+            f($"{k}.copy" , "같은 종류, 같은 원소 타입의 새 배열/리스트로 복사합니다. (얕은 복사)" , S("array|list" , c));
+            f($"{k}.distinct" , "중복된(equal) 원소를 제거한 새 배열/리스트를 반환합니다. 처음 나온 원소를 남깁니다." , S("array|list" , c));
+            f($"{k}.binary_search" , "오름차순으로 정렬된 배열/리스트에서 값을 이진 탐색합니다. 찾으면 그 인덱스(같은 값이 여러개면 가장 앞), 없으면 들어갈 위치를 not으로 반전한 음수를 반환합니다." , S("int" , c , P("value" , "any")));
+            f($"{k}.fill" , "모든 원소를 값으로 바꿉니다. 원래 배열/리스트를 바꾸고 그대로 반환합니다." , S("array|list" , c , P("value" , "any")));
+            f($"{k}.min" , "가장 작은 원소를 반환합니다. (sort와 같은 기준, 빈 배열/리스트는 오류)" , S("any" , c));
+            f($"{k}.max" , "가장 큰 원소를 반환합니다. (sort와 같은 기준, 빈 배열/리스트는 오류)" , S("any" , c));
+            f($"{k}.sum" , "모든 원소(숫자)를 add와 같이 더합니다. 빈 배열/리스트는 0입니다." , S("int|double" , c));
+            f($"{k}.range" , $"시작(생략하면 0)부터 끝 바로 앞까지 간격(생략하면 1)만큼 바뀌는 정수 {made}을/를 만듭니다." , S(kind , P("end" , "int")) , S(kind , P("start" , "int") , P("end" , "int")) , S(kind , P("start" , "int") , P("end" , "int") , P("step" , "int")));
+        }
+        BuiltinParameter l = P("list" , "list");
+        f("list.push" , "리스트 끝에 값들을 추가하고 리스트를 반환합니다. (배열은 길이를 바꿀수 없어 오류)" , V("list" , l , P("value" , "any")));
+        f("list.pop" , "마지막 원소를 제거하고, 그 원소를 반환합니다." , S("any" , l));
+        f("list.insert" , "인덱스 위치에 값을 끼워넣고 리스트를 반환합니다." , S("list" , l , P("index" , "int") , P("value" , "any")));
+        f("list.removeat" , "인덱스 위치의 원소를 제거하고, 그 원소를 반환합니다." , S("any" , l , P("index" , "int")));
+        f("list.remove" , "값과 같은(equal) 첫 원소를 제거합니다. 제거했다면 true를 반환합니다." , S("bool" , l , P("value" , "any")));
+        f("list.clear" , "모든 원소를 제거하고 리스트를 반환합니다." , S("list" , l));
+
+        BuiltinParameter t = P("text" , "string");
+        f("string.concat" , "값들을 문자열로 바꿔서 이어붙입니다. (C#의 string.Concat, null은 빈 문자열)" , V("string" , P("value" , "any")));
+        f("string.join" , "값들을 구분자로 이어붙입니다. 값이 배열/리스트 하나라면 그 원소들을 이어붙입니다. (C#의 string.Join)" , V("string" , P("separator" , "string") , P("value" , "any")));
+        f("string.format" , "C#의 string.Format처럼 {0}, {1:F2}, {0,5} 자리에 값을 넣습니다. {0}이 첫번째 값입니다." , V("string" , P("format" , "string") , P("arg" , "any")));
+        f("string.compare" , "유니코드 순서로 비교해서 a가 앞이면 -1, 같으면 0, 뒤면 1을 반환합니다. (null은 가장 앞)" , S("int" , P("a" , "string") , P("b" , "string")));
+        f("string.equals" , "두 문자열이 같은지 비교합니다. 세번째 인자가 참이면 대소문자를 무시합니다." , S("bool" , P("a" , "string") , P("b" , "string")) , S("bool" , P("a" , "string") , P("b" , "string") , P("ignoreCase" , "bool")));
+        f("string.isnullorempty" , "값이 null 또는 빈 문자열이면 true를 반환합니다." , S("bool" , P("value" , "string")));
+        f("string.isnullorwhitespace" , "값이 null이거나 공백 문자로만 이루어졌다면 true를 반환합니다." , S("bool" , P("value" , "string")));
+        f("string.indexof" , "찾을 문자열이 처음 나오는 인덱스를 반환합니다. 없으면 -1입니다." , S("int" , t , P("value" , "string")) , S("int" , t , P("value" , "string") , P("start" , "int")));
+        f("string.lastindexof" , "찾을 문자열이 마지막으로 나오는 인덱스를 반환합니다. 없으면 -1입니다." , S("int" , t , P("value" , "string")));
+        f("string.contains" , "찾을 문자열이 있으면 true를 반환합니다. (대소문자 구별)" , S("bool" , t , P("value" , "string")));
+        f("string.startswith" , "값으로 시작하면 true를 반환합니다." , S("bool" , t , P("value" , "string")));
+        f("string.endswith" , "값으로 끝나면 true를 반환합니다." , S("bool" , t , P("value" , "string")));
+        f("string.replace" , "바꿀 문자열을 모두 새 문자열로 바꿉니다. 새 문자열이 null이면 제거합니다." , S("string" , t , P("old" , "string") , P("new" , "string")));
+        f("string.substring" , "시작 인덱스부터 길이만큼(생략하면 끝까지)의 문자열을 반환합니다." , S("string" , t , P("start" , "int")) , S("string" , t , P("start" , "int") , P("length" , "int")));
+        f("string.insert" , "인덱스 위치에 값을 끼워넣은 문자열을 반환합니다." , S("string" , t , P("index" , "int") , P("value" , "string")));
+        f("string.remove" , "시작 인덱스부터 개수만큼(생략하면 끝까지)의 글자를 제거한 문자열을 반환합니다." , S("string" , t , P("start" , "int")) , S("string" , t , P("start" , "int") , P("count" , "int")));
+        f("string.toupper" , "대문자로 바꾼 문자열을 반환합니다. (문화권과 무관)" , S("string" , t));
+        f("string.tolower" , "소문자로 바꾼 문자열을 반환합니다. (문화권과 무관)" , S("string" , t));
+        f("string.trim" , "양쪽의 공백 문자(또는 두번째 인자에 있는 글자들)를 제거합니다." , S("string" , t) , S("string" , t , P("chars" , "string")));
+        f("string.trimstart" , "앞쪽의 공백 문자(또는 두번째 인자에 있는 글자들)를 제거합니다." , S("string" , t) , S("string" , t , P("chars" , "string")));
+        f("string.trimend" , "뒤쪽의 공백 문자(또는 두번째 인자에 있는 글자들)를 제거합니다." , S("string" , t) , S("string" , t , P("chars" , "string")));
+        f("string.padleft" , "길이가 될때까지 앞쪽에 글자(생략하면 공백)를 채웁니다." , S("string" , t , P("width" , "int")) , S("string" , t , P("width" , "int") , P("char" , "string")));
+        f("string.padright" , "길이가 될때까지 뒤쪽에 글자(생략하면 공백)를 채웁니다." , S("string" , t , P("width" , "int")) , S("string" , t , P("width" , "int") , P("char" , "string")));
+        f("string.split" , "구분자로 나눈 문자열 배열을 반환합니다. 구분자를 생략하면 공백 문자마다 나눕니다." , S("array" , t) , S("array" , t , P("separator" , "string")));
+        f("string.tochararray" , "한 글자씩 나눈 문자열 배열을 반환합니다." , S("array" , t));
+        f("string.charcode" , "인덱스(생략하면 0) 위치 글자의 UTF-16 코드를 반환합니다." , S("int" , t) , S("int" , t , P("index" , "int")));
+        f("string.fromcharcode" , "UTF-16 코드(0 ~ 65535)들로 문자열을 만듭니다." , V("string" , P("code" , "int")));
+        return d;
+    }
 
     static readonly Lazy<IReadOnlyDictionary<string , Builtin>> all = new(Load);
 

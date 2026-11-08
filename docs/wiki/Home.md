@@ -24,7 +24,7 @@
 
 ```
 $ jyuno --version
-JyunoSdk 0.2.0 (Jyuno 1.4.0)
+JyunoSdk 0.3.0 (Jyuno 1.4.2)
 ```
 
 ## Native JS 문서

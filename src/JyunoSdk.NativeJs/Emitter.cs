@@ -125,13 +125,31 @@ sealed class Emitter
         }
     }
     //JS 런타임의 builtins 객체에 있는 이름 (Jyuno의 필수 명령어)
-    static readonly HashSet<string> Builtins = new() { "int" , "double" , "string" , "array" , "list" , "length" , "add" , "sub" , "mul" , "div" , "mod" , "equal" , "less" , "greater" , "and" , "or" , "not" , "bool" };
+    static readonly HashSet<string> Builtins = create_builtins();
+    static HashSet<string> create_builtins()
+    {
+        HashSet<string> names = new() { "int" , "double" , "string" , "array" , "list" , "length" , "add" , "sub" , "mul" , "div" , "mod" , "equal" , "less" , "greater" , "and" , "or" , "not" , "bool" };
+        //컬렉션 함수 (Jyuno 1.4.1~1.4.2)
+        foreach (string kind in new[] { "array" , "list" })
+            foreach (string name in new[] { "sort" , "reverse" , "shuffle" , "contains" , "indexof" , "slice" , "join" , "new" ,
+                "copy" , "lastindexof" , "count" , "distinct" , "binary_search" , "fill" , "min" , "max" , "sum" , "range" })
+                names.Add($"{kind}.{name}");
+        foreach (string name in new[] { "push" , "pop" , "insert" , "removeat" , "remove" , "clear" })
+            names.Add($"list.{name}");
+        //문자열 함수 (Jyuno 1.4.2)
+        foreach (string name in new[] { "concat" , "join" , "format" , "compare" , "equals" , "isnullorempty" , "isnullorwhitespace" ,
+            "indexof" , "lastindexof" , "contains" , "startswith" , "endswith" , "replace" , "substring" , "insert" , "remove" ,
+            "toupper" , "tolower" , "trim" , "trimstart" , "trimend" , "padleft" , "padright" , "split" , "tochararray" , "charcode" , "fromcharcode" })
+            names.Add($"string.{name}");
+        return names;
+    }
     static readonly Dictionary<(string, int) , string> Fast = new() {
         [("add", 2)] = "add2", [("add", 3)] = "add3", [("sub", 2)] = "sub2", [("mul", 2)] = "mul2", [("mul", 3)] = "mul3",
         [("div", 2)] = "div2", [("mod", 2)] = "mod2", [("equal", 2)] = "equal2", [("less", 2)] = "less2", [("greater", 2)] = "greater2",
         [("and", 2)] = "and2", [("or", 2)] = "or2", [("not", 1)] = "not1", [("length", 1)] = "length1",
     };
-    static readonly HashSet<string> BoolResult = new() { "equal" , "less" , "greater" , "bool" };
+    static readonly HashSet<string> BoolResult = new() { "equal" , "less" , "greater" , "bool" , "array.contains" , "list.contains" , "list.remove" ,
+        "string.equals" , "string.isnullorempty" , "string.isnullorwhitespace" , "string.contains" , "string.startswith" , "string.endswith" };
 
     string global_value(string name)
     {
