@@ -10,19 +10,15 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>jyuno</ToolCommandName>
     <PackageId>JyunoSdk</PackageId>
-    <Description>Jyuno SDK: 대화형 Jyuno 프롬프트, 스크립트 실행/검사, 그리고 Jyuno 언어 서버(LSP)를 제공하는 jyuno 명령어입니다.</Description>
-    <PackageTags>jyuno;repl;language-server;lsp;sdk</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>Jyuno SDK: 대화형 Jyuno 프롬프트, 스크립트 실행/검사, Native JS(JavaScript) 변환, 그리고 Jyuno 언어 서버(LSP)를 제공하는 jyuno 명령어입니다.</Description>
+    <PackageTags>jyuno;repl;language-server;lsp;sdk;javascript</PackageTags>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\JyunoSdk.Analysis\JyunoSdk.Analysis.csproj" />
     <ProjectReference Include="..\JyunoSdk.LanguageServer\JyunoSdk.LanguageServer.csproj" />
+    <ProjectReference Include="..\JyunoSdk.NativeJs\JyunoSdk.NativeJs.csproj" />
   </ItemGroup>
 
 </Project>

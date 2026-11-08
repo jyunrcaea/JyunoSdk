@@ -7,6 +7,9 @@
 - **대화형 프롬프트(REPL)**: 한 줄씩 실행하고, `if`/`while`/`repeat`/`for`/`func` 블록도 여러 줄로 입력할수 있습니다.
 - **스크립트 실행/검사/정리**: `jyuno run`, `jyuno check`, `jyuno format`
 - **언어 서버(LSP)**: `jyuno lsp` — VS Code 등 LSP를 지원하는 편집기에서 진단, 자동 완성, 정의로 이동 등을 제공합니다.
+- **Native JS**: `jyuno <파일> --native-js` — Jyuno 코드를 런타임이 포함된 JavaScript 파일로 변환합니다. 브라우저나 Node.js에서 .NET 없이 실행됩니다.
+
+각 기능은 NuGet 라이브러리(`JyunoSdk.Analysis`, `JyunoSdk.LanguageServer`, `JyunoSdk.NativeJs`)로도 배포되므로, 다른 프로그램에서 패키지를 추가해서 쓸수 있습니다.
 
 ## 구성
 
@@ -14,7 +17,8 @@
 | --- | --- |
 | `src/JyunoSdk.Analysis` | 실행하지 않고 Jyuno 코드를 분석하는 라이브러리 (위치가 있는 토큰, 블록 구조, 변수 영역, 이름 해석, 진단, 포맷팅, 내장 명령어 문서) |
 | `src/JyunoSdk.LanguageServer` | Language Server Protocol 3.17 구현 (표준 입출력 JSON-RPC, 외부 의존성 없음) |
-| `src/JyunoSdk.Cli` | `jyuno` 명령어 (REPL, run, check, format, lsp) |
+| `src/JyunoSdk.NativeJs` | Jyuno 코드를 JavaScript로 변환 (Native JS). 분석은 Jyuno 라이브러리의 `Jyuno.Analysis`를 사용 |
+| `src/JyunoSdk.Cli` | `jyuno` 명령어 (REPL, run, check, format, lsp, --native-js) |
 | `tests/JyunoSdk.Tests` | 테스트 |
 
 Jyuno 인터프리터는 NuGet의 [`Jyuno`](https://www.nuget.org/packages/Jyuno) 패키지를 사용합니다. (버전은 `Directory.Build.props`의 `JyunoVersion`)
@@ -41,6 +45,9 @@ dotnet run --project src/JyunoSdk.Cli
 jyuno                          대화형 프롬프트(REPL)를 실행합니다.
 jyuno <파일> [옵션]            스크립트 파일을 실행합니다.
 jyuno run <파일> [옵션]        스크립트 파일을 실행합니다.
+jyuno <파일> --native-js [출력 파일]
+                               실행하지 않고 JavaScript(Native JS)로 변환합니다.
+                               (출력 파일을 생략하면 스크립트 이름의 확장자를 .js로 바꾼 파일)
 jyuno check <파일...> [옵션]   스크립트를 실행하지 않고 문법/이름 문제를 검사합니다.
 jyuno format <파일...> [--write] [--spaces <n>]
                                블록 구조에 맞춰 들여쓰기를 정리합니다.
@@ -51,6 +58,7 @@ jyuno --version                버전을 출력합니다.
   --file, -file                파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
   --commands <묶음,...>        사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
+  --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
 ```
 
 ### 대화형 프롬프트
@@ -143,6 +151,55 @@ vim.lsp.enable('jyuno')
 | JY2004 | 경고/오류 | if/while/repeat/goto/return의 값이 없거나 둘 이상 |
 | JY2005 | 경고 | 설정된 프로그램이 제공하지 않는 명령어 묶음 (예: file) |
 
+## Native JS
+Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno 런타임(값, 연산, console/math 명령어)이 들어 있어서, 다른 파일 없이 Node.js나 브라우저에서 실행됩니다.
+인터프리터와 같은 결과(출력, 반환값, 오류 메시지와 줄)를 내도록 차등 테스트로 검증했고, 반복문이나 함수 호출이 많은 코드에서 훨씬 빠릅니다.
+```
+jyuno hello.jyuno --native-js          # hello.js 생성
+jyuno hello.jyuno --native-js out.js   # out.js 생성
+node hello.js                          # 표준 입출력으로 실행
+```
+
+### 제약
+변수와 함수를 미리 정해진 자리에 두고 직접 호출하도록 변환하기 때문에, 다음 코드는 변환하지 않고 오류로 알려줍니다.
+
+| 제약 | 예 |
+| --- | --- |
+| 변수/함수 삭제를 쓸수 없음 | `x =` |
+| 내장 함수/상수(`add`, `mul`, `console.writeline`, `true`, `math.pi` 등)와 프로그램이 제공하는 함수를 재정의/대입할수 없음 | `add = 1`, `func mul`, `5 = true`, `for add 'abc'` |
+| goto로 블록(if, while, repeat, for) 안쪽으로 들어갈수 없음 | `goto inner` (inner가 if 안) |
+| 블록 구조 오류(짝이 없는 end 등)는 실행 전에 알려줌 | |
+
+프로그램이 제공하는 변수(`console.title` 등)에 값을 대입하는건 허용됩니다. 계산된 goto 대상이 블록 안쪽이라면 실행 중에 `Native JS 제약` 오류가 납니다.
+`file.*`, `directory.*` 명령어는 지원하지 않습니다.
+
+### 만들어진 코드 사용하기
+만들어진 파일은 전역 변수 `JyunoProgram`(CommonJS라면 `module.exports`)을 정의합니다.
+```js
+const program = require('./hello.js');
+const result = program.run({
+  input: '입력\n',                         // console.readline/console.read가 읽을 문자열
+  write: (text) => process.stdout.write(text), // 생략하면 result.output으로 모아서 돌려줌
+  host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // 프로그램이 제공하는 함수
+});
+// result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
+```
+호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JyunoError`, `str`, `typeName` 등)을 사용합니다.
+
+### 라이브러리
+```cs
+using JyunoSdk.NativeJs;
+
+var runtime = new Jyuno.Runtime();
+runtime.AddFunction("text.upper", args => args[0]?.ToString()?.ToUpperInvariant());
+var result = NativeJsCompiler.Compile(File.ReadAllText("hello.jyuno"), new NativeJsOptions {
+    Globals = runtime.GetGlobals(),  // 프로그램이 추가한 함수도 재정의할수 없는 이름으로 검사
+    Name = "hello.jyuno",
+});
+if (result.Success) File.WriteAllText("hello.js", result.Code);
+else foreach (var error in result.Errors) Console.WriteLine($"{error.Line + 1}: {error.Message}");
+```
+
 ## 라이브러리로 사용하기
 `JyunoSdk.Analysis`는 Jyuno 코드를 실행하지 않고 분석합니다.
 ```cs
@@ -168,9 +225,10 @@ dotnet test tests/JyunoSdk.Tests -p:JyunoSource=../Jyuno/Jyuno.csproj
 Jyuno에 새 내장 명령어가 추가되면 `src/JyunoSdk.Analysis/Builtins.cs`에 설명을 추가해야 합니다. (`BuiltinTests`가 알려줍니다)
 
 ## 릴리즈
-``v1.2.3`` 형식의 태그를 푸시하면 GitHub Actions가 테스트 후 운영체제별 `jyuno` 실행 파일(Windows/Linux/macOS, x64/arm64)과 dotnet tool 패키지를 GitHub 릴리즈에 올리고, NuGet에 `JyunoSdk`를 배포합니다.
+``v1.2.3`` 형식의 태그를 푸시하면 GitHub Actions가 테스트 후 운영체제별 `jyuno` 실행 파일(Windows/Linux/macOS, x64/arm64)과 NuGet 패키지를 GitHub 릴리즈에 올리고, NuGet에 `JyunoSdk`(dotnet tool), `JyunoSdk.Analysis`, `JyunoSdk.LanguageServer`, `JyunoSdk.NativeJs`를 배포합니다.
 ```
 git tag v0.1.0
 git push origin v0.1.0
 ```
+태그 대신 Actions 탭의 Release 워크플로우를 직접 실행(Run workflow)하고 버전을 입력해도 됩니다. 이때는 선택한 브랜치의 커밋에 `v(버전)` 태그가 만들어집니다.
 NuGet 배포는 [Trusted Publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing)을 사용합니다. nuget.org의 Trusted Publishing 정책(저장소 ``jyunrcaea/JyunoSdk``, 워크플로우 ``release.yml``, 환경 ``production``)을 먼저 만들어야 합니다.
