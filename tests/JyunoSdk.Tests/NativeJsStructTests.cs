@@ -885,6 +885,41 @@ console.writeline (list.join (list a b) "","")")
     }
 
     [Fact]
+    public void HostFunctionReceivesStructCopy()
+    {
+        string? node = NativeJsTests.FindNode();
+        if (node is null)
+            return;
+        Jyuno.Runtime runtime = new();
+        runtime.AddFunction("inspect" , args => null);
+        var result = JyunoSdk.NativeJs.NativeJsCompiler.Compile(new[] { "struct point" , "  param x" , "  param y" , "endstruct" , "p = point 1 2" , "console.writeline (inspect p)" , "console.writeline p.x" } , new JyunoSdk.NativeJs.NativeJsOptions { Globals = runtime.GetGlobals() });
+        Assert.True(result.Success);
+        string file = Path.Combine(Path.GetTempPath() , $"jyuno-nativejs-struct-host-{Guid.NewGuid():N}.js");
+        File.WriteAllText(file , result.Code);
+        try
+        {
+            //호스트 함수가 받은 값을 바꿔도 스크립트의 값은 그대로
+            string js = "const p = require(process.argv[1]);" +
+                "const r = p.run({ host: { inspect: (a) => { const s = a[0]; const t = [s instanceof p.runtime.JStruct, s.typeName, s.fieldNames.join(), s.field('y')].join(' '); s.f_x = 99; return t; } } });" +
+                "process.stdout.write(JSON.stringify([r.status, r.output]));";
+            System.Diagnostics.ProcessStartInfo info = new(node) { RedirectStandardOutput = true , RedirectStandardError = true };
+            info.ArgumentList.Add("-e");
+            info.ArgumentList.Add(js);
+            info.ArgumentList.Add(file);
+            using var process = System.Diagnostics.Process.Start(info)!;
+            var stderr = process.StandardError.ReadToEndAsync();
+            string stdout = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(process.ExitCode == 0 , stderr.Result);
+            Assert.Equal("[\"ok\",\"true point x,y 2\\n1\\n\"]" , stdout);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
     public void ProgramsWithoutStructsAreUnchanged()
     {
         //구조체가 없으면 구조체용 코드를 만들지 않음

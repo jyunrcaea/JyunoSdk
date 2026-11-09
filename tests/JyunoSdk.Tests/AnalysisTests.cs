@@ -91,6 +91,30 @@ repeat m
     k = add k 1
 end
 console.writeline c") },
+        new object[] { Script.Lines(@"
+struct point
+    param x
+    param y
+    func length2
+        return (add (mul x x) (mul y y))
+    endfunc
+    func move
+        param dx
+        x = add x dx
+    endfunc
+endstruct
+struct line
+    param from
+    param to
+endstruct
+p = point 3 4
+p.x = 5
+p.move 1
+console.writeline p.x p.y (p.length2)
+l = line p (point 0 0)
+console.writeline l.from.x l.to.y
+q = p
+console.writeline (equal p q) (string q)") },
     };
 
     [Theory]
@@ -123,7 +147,13 @@ console.writeline c") },
     [InlineData(new[] { "endfunc" } , "endfunc와 짝이 되는 func 키워드가 없습니다.")]
     [InlineData(new[] { "if 1" , "else" , "else" , "end" } , "else는 if와 end 사이에 한번만 쓸수 있습니다.")]
     [InlineData(new[] { "break" } , "break는 반복문(while, repeat, for) 안에서만 쓸수 있습니다.")]
-    [InlineData(new[] { "param x" } , "param은 func와 endfunc 사이에서만 쓸수 있습니다.")]
+    [InlineData(new[] { "param x" } , "param은 func와 endfunc(또는 struct와 endstruct) 사이에서만 쓸수 있습니다.")]
+    [InlineData(new[] { "struct s" } , "struct 키워드는 endstruct 키워드로 종료 표시가 있어야 합니다.")]
+    [InlineData(new[] { "endstruct" } , "endstruct와 짝이 되는 struct 키워드가 없습니다.")]
+    [InlineData(new[] { "struct s" , "endfunc" , "endstruct" } , "endfunc와 짝이 되는 func 키워드가 없습니다.")]
+    [InlineData(new[] { "func f" , "endstruct" , "endfunc" } , "endstruct와 짝이 되는 struct 키워드가 없습니다.")]
+    [InlineData(new[] { "struct s" , "end" , "endstruct" } , "end와 짝이 되는 if, while, repeat, for 키워드가 없습니다.")]
+    [InlineData(new[] { "repeat 1" , "struct s" , "break" , "endstruct" , "end" } , "break는 반복문(while, repeat, for) 안에서만 쓸수 있습니다.")]
     [InlineData(new[] { "repeat 1" , "func f" , "break" , "endfunc" , "end" } , "break는 반복문(while, repeat, for) 안에서만 쓸수 있습니다.")]
     public void BlockErrorsMatchJyuno(string[] lines , string message)
     {
@@ -133,6 +163,46 @@ console.writeline c") },
         var result = new Jyuno.Runtime().Create(lines).Run();
         if (result is Jyuno.Language.GrammarError error)
             Assert.Equal(message , error.Message);
+    }
+
+    [Fact]
+    public void StructBlocksAndScopes()
+    {
+        var document = Parse("struct point" , "param x" , "func show" , "console.writeline x" , "endfunc" , "endstruct" , "p = point 1" , "p.show" , "console.writeline p.x" , "console.writeline q.x");
+        var structure = document.Blocks[0];
+        Assert.Equal(BlockKind.Struct , structure.Kind);
+        Assert.Equal("point" , structure.FunctionName);
+        Assert.Equal(5 , structure.CloseLine);
+        Assert.Equal(new[] { "x" } , structure.Parameters);
+        Assert.Equal(ScopeKind.Struct , structure.Scope!.Kind);
+        Assert.Equal(new[] { 0 , 1 , 1 , 2 , 1 , 0 , 0 , 0 , 0 , 0 } , document.Lines.Select(l => l.Depth));
+        //구조체 이름
+        var point = document.Script.Symbols["point"];
+        Assert.Equal(SymbolKind.Struct , point.Kind);
+        Assert.Same(structure , point.FunctionBlock);
+        //구조체 함수 안에서 필드를 이름 그대로 읽음
+        var x_read = document.Lines[3].Names.Single(n => n.Name == "x");
+        Assert.Same(structure.Scope.Symbols["x"] , x_read.Symbol);
+        //구조체 값을 담은 변수의 멤버 이름은 정의되지 않은 이름이 아님
+        Assert.Same(document.Script.Symbols["p"] , document.Lines[7].Names[0].MemberOf);
+        Assert.Same(document.Script.Symbols["p"] , document.Lines[8].Names.Single(n => n.Name == "p.x").MemberOf);
+        var undefined = Assert.Single(document.Diagnostics);
+        Assert.Equal(DiagnosticCodes.UndefinedName , undefined.Code);
+        Assert.Equal(9 , undefined.Line);
+    }
+
+    [Fact]
+    public void StructNameNeedsOneName()
+    {
+        var document = Parse("struct" , "endstruct" , "struct a b" , "endstruct");
+        Assert.Equal(2 , document.Diagnostics.Count(d => d.Code == DiagnosticCodes.KeywordSyntax && d.Message == "struct 다음에는 구조체 이름 하나만 와야 합니다."));
+    }
+
+    [Fact]
+    public void GotoCannotLeaveStruct()
+    {
+        var document = Parse("struct s" , "goto out" , "endstruct" , "out:");
+        Assert.Contains(document.Diagnostics , d => d.Code == DiagnosticCodes.GotoAcrossFunction);
     }
 
     [Fact]
@@ -305,7 +375,7 @@ console.writeline c") },
 public class AnalysisFuzzTests
 {
     static readonly string[] fragments = {
-        "if" , "else" , "end" , "while" , "repeat" , "for" , "break" , "goto" , "func" , "param" , "endfunc" , "return" , "local" ,
+        "if" , "else" , "end" , "while" , "repeat" , "for" , "break" , "goto" , "func" , "param" , "endfunc" , "return" , "local" , "struct" , "endstruct" , "me.x" ,
         "x" , "y" , "f" , "add" , "console.writeline" , "math.pi" , "file.read" , "=" , ":" , "(" , ")" , "+" , "1" , "-2" , "3.5" ,
         "'s'" , "\"t" , "lbl:" , "array" , "\t" , " " , "99999999999999999999"
     };
@@ -350,7 +420,7 @@ public class AnalysisFuzzTests
     [Fact]
     public void BlockErrorsAgreeWithJyuno()
     {
-        string[] keywords = { "if 0" , "else" , "end" , "repeat 0" , "func f" , "endfunc" , "break" , "param p" , "x = 1" };
+        string[] keywords = { "if 0" , "else" , "end" , "repeat 0" , "func f" , "endfunc" , "struct s" , "endstruct" , "break" , "param p" , "x = 1" };
         Random random = new(614);
         for (int doc = 0 ; doc < 2000 ; doc++)
         {

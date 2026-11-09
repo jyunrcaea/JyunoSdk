@@ -18,7 +18,7 @@ public sealed record AnalyzerOptions
 
 /// <summary>
 /// Jyuno 스크립트 하나를 실행하지 않고 분석한 결과입니다.
-/// 토큰, 블록 구조(if/while/repeat/for/func), 변수 영역, 이름 해석, 진단을 제공합니다.
+/// 토큰, 블록 구조(if/while/repeat/for/func/struct), 변수 영역, 이름 해석, 진단을 제공합니다.
 /// </summary>
 public sealed class JyunoDocument
 {
@@ -80,11 +80,17 @@ public sealed class JyunoDocument
                 errors[block.OpenLine] = "func 키워드는 endfunc 키워드로 종료 표시가 있어야 합니다.";
                 return;
             }
+            if (block.Kind is BlockKind.Struct)
+            {
+                errors[block.OpenLine] = "struct 키워드는 endstruct 키워드로 종료 표시가 있어야 합니다.";
+                return;
+            }
             errors[block.OpenLine] = "모든 조건문(if, while 등) 키워드는 end 키워드로 종료 표시가 있어야 합니다.";
             if (block.ElseLine >= 0)
                 errors[block.ElseLine] = errors[block.OpenLine];
         }
-        Block? innermost_function() => opened.FirstOrDefault(b => b.Kind is BlockKind.Func);
+        //가장 안쪽 func/struct 블록 (본문을 따로 실행하는 블록)
+        Block? innermost_body() => opened.FirstOrDefault(b => b.IsBody);
 
         for (int line = 0 ; line < Lines.Count ; line++)
         {
@@ -98,12 +104,13 @@ public sealed class JyunoDocument
                 KeywordType.Repeat => BlockKind.Repeat,
                 KeywordType.For => BlockKind.For,
                 KeywordType.Func => BlockKind.Func,
+                KeywordType.Struct => BlockKind.Struct,
                 _ => null
             };
             if (kind is BlockKind k)
             {
                 Block block = new(k , line , opened.TryPeek(out var parent) ? parent : null);
-                if (k is BlockKind.Func && info.Tokens.Count > 1 && info.Tokens[1].Type is TokenType.Name)
+                if (k is BlockKind.Func or BlockKind.Struct && info.Tokens.Count > 1 && info.Tokens[1].Type is TokenType.Name)
                     block.FunctionName = (string)info.Tokens[1].Value;
                 blocks.Add(block);
                 info.Block = block;
@@ -122,7 +129,7 @@ public sealed class JyunoDocument
                         errors[line] = "else는 if와 end 사이에 한번만 쓸수 있습니다.";
                     break;
                 case KeywordType.End:
-                    if (!opened.TryPeek(out var opener) || opener.Kind is BlockKind.Func)
+                    if (!opened.TryPeek(out var opener) || opener.IsBody)
                     {
                         errors[line] = "end와 짝이 되는 if, while, repeat, for 키워드가 없습니다.";
                         break;
@@ -132,10 +139,13 @@ public sealed class JyunoDocument
                     info.Block = opener;
                     break;
                 case KeywordType.EndFunc:
-                    Block? func = innermost_function();
-                    if (func is null)
+                case KeywordType.EndStruct:
+                    //endfunc는 func, endstruct는 struct만 닫음 (가장 안쪽 func/struct가 다른 종류라면 오류)
+                    bool is_func = keyword is KeywordType.EndFunc;
+                    Block? func = innermost_body();
+                    if (func is null || (func.Kind is BlockKind.Func) != is_func)
                     {
-                        errors[line] = "endfunc와 짝이 되는 func 키워드가 없습니다.";
+                        errors[line] = is_func ? "endfunc와 짝이 되는 func 키워드가 없습니다." : "endstruct와 짝이 되는 struct 키워드가 없습니다.";
                         break;
                     }
                     while (opened.Peek() != func)
@@ -148,7 +158,7 @@ public sealed class JyunoDocument
                     Block? loop = null;
                     foreach (Block o in opened)
                     {
-                        if (o.Kind is BlockKind.Func)
+                        if (o.IsBody)
                             break;
                         if (o.Kind is not BlockKind.If)
                         {
@@ -162,10 +172,10 @@ public sealed class JyunoDocument
                         breaks.Add((line , loop));
                     break;
                 case KeywordType.Param:
-                    Block? function = innermost_function();
+                    Block? function = innermost_body();
                     if (function is null)
                     {
-                        errors[line] = "param은 func와 endfunc 사이에서만 쓸수 있습니다.";
+                        errors[line] = "param은 func와 endfunc(또는 struct와 endstruct) 사이에서만 쓸수 있습니다.";
                         break;
                     }
                     if (info.Tokens.Count > 1 && info.Tokens[1].Type is TokenType.Name)
@@ -206,9 +216,14 @@ public sealed class JyunoDocument
             line.Depth = depth;
             if (line.Block is Block block && block.OpenLine == line.Index)
             {
-                if (block.Kind is BlockKind.Func or BlockKind.For)
+                if (block.Kind is BlockKind.Func or BlockKind.Struct or BlockKind.For)
                 {
-                    block.Scope = new Scope(block.Kind is BlockKind.Func ? ScopeKind.Function : ScopeKind.Loop , line.Scope , block);
+                    ScopeKind kind = block.Kind switch {
+                        BlockKind.Func => ScopeKind.Function,
+                        BlockKind.Struct => ScopeKind.Struct,
+                        _ => ScopeKind.Loop
+                    };
+                    block.Scope = new Scope(kind , line.Scope , block);
                     scopes.Add(block.Scope);
                 }
                 //한 줄짜리 블록(닫히지 않고 마지막 줄에서 끝남)이 아니라면 안쪽 줄이 있음
@@ -218,10 +233,10 @@ public sealed class JyunoDocument
         }
     }
 
-    static bool IsStrong(OccurrenceRole role) => role is OccurrenceRole.Function or OccurrenceRole.Label or OccurrenceRole.Constant or OccurrenceRole.Parameter or OccurrenceRole.Local or OccurrenceRole.LoopVariable;
+    static bool IsStrong(OccurrenceRole role) => role is OccurrenceRole.Function or OccurrenceRole.Struct or OccurrenceRole.Label or OccurrenceRole.Constant or OccurrenceRole.Parameter or OccurrenceRole.Local or OccurrenceRole.LoopVariable;
 
     //이름 해석
-    //Jyuno에서 func/param/local/레이블/상수/for 변수는 항상 지금 영역에 이름을 만들고,
+    //Jyuno에서 func/struct/param/local/레이블/상수/for 변수는 항상 지금 영역에 이름을 만들고,
     //일반 대입은 바깥 영역에 같은 이름이 있다면 그 변수를 바꾸고 없다면 지금 영역에 새로 만듦
     //실행 순서는 알수 없으므로, 영역 안에서 한번이라도 만든 이름은 그 영역 전체에서 있는 것으로 봄
     void Resolve()
@@ -249,6 +264,22 @@ public sealed class JyunoDocument
             return outermost;
         }
         HashSet<string> host = new(Options.HostNames);
+        //변수.필드 형식의 이름: 점 앞부분(긴 것부터)이 스크립트의 변수라면 그 변수 (구조체 값을 대입하면 멤버 이름이 선언됨)
+        Symbol? member_owner(NameOccurrence occurrence)
+        {
+            string name = occurrence.Name;
+            for (int dot = name.LastIndexOf('.') ; dot > 0 ; dot = name.LastIndexOf('.' , dot - 1))
+            {
+                string prefix = name[..dot];
+                if (bind(occurrence.Scope , prefix) is Scope owner)
+                {
+                    if (!owner.symbols.TryGetValue(prefix , out var symbol))
+                        owner.symbols[prefix] = symbol = new Symbol(prefix , owner);
+                    return symbol;
+                }
+            }
+            return null;
+        }
         foreach (var occurrence in names)
         {
             Scope? scope = IsStrong(occurrence.Role) ? occurrence.Scope : bind(occurrence.Scope , occurrence.Name);
@@ -256,6 +287,8 @@ public sealed class JyunoDocument
             {
                 if (Builtins.TryGet(occurrence.Name , out var builtin))
                     occurrence.Builtin = builtin;
+                else
+                    occurrence.MemberOf = member_owner(occurrence);
                 occurrence.IsHostName = host.Contains(occurrence.Name);
                 continue;
             }
@@ -272,15 +305,17 @@ public sealed class JyunoDocument
             var roles = symbol.Definitions.Select(d => d.Role).ToHashSet();
             symbol.Kind =
                 roles.Contains(OccurrenceRole.Function) ? SymbolKind.Function :
+                roles.Contains(OccurrenceRole.Struct) ? SymbolKind.Struct :
                 roles.Contains(OccurrenceRole.Parameter) ? SymbolKind.Parameter :
                 roles.Contains(OccurrenceRole.LoopVariable) ? SymbolKind.LoopVariable :
                 roles.Contains(OccurrenceRole.Label) ? SymbolKind.Label :
                 roles.Contains(OccurrenceRole.Constant) ? SymbolKind.Constant :
                 roles.Contains(OccurrenceRole.Local) ? SymbolKind.Local :
                 SymbolKind.Variable;
-            if (symbol.Kind is SymbolKind.Function)
+            if (symbol.Kind is SymbolKind.Function or SymbolKind.Struct)
             {
-                var def = symbol.Definitions.First(d => d.Role is OccurrenceRole.Function);
+                var role = symbol.Kind is SymbolKind.Function ? OccurrenceRole.Function : OccurrenceRole.Struct;
+                var def = symbol.Definitions.First(d => d.Role == role);
                 symbol.FunctionBlock = Lines[def.Line].Block;
             }
         }
@@ -290,7 +325,7 @@ public sealed class JyunoDocument
     {
         foreach (var occurrence in names)
         {
-            if (occurrence.IsDefinition || occurrence.Symbol is not null || occurrence.IsHostName)
+            if (occurrence.IsDefinition || occurrence.Symbol is not null || occurrence.IsHostName || occurrence.MemberOf is not null)
                 continue;
             if (occurrence.Builtin is Builtin builtin)
             {
@@ -309,7 +344,7 @@ public sealed class JyunoDocument
             if (function)
                 Report(DiagnosticCodes.FunctionAsValue , DiagnosticSeverity.Warning , $"'{occurrence.Name}'은/는 함수이므로 인자 자리에서 값을 읽을수 없습니다. 함수를 호출한 결과를 넘기려면 '({occurrence.Name} ...)'처럼 괄호로 감싸세요." , occurrence.Line , occurrence.Token);
         }
-        //goto (레이블): 함수 안팎으로 이동할수 없음
+        //goto (레이블): 함수(또는 구조체 생성자) 안팎으로 이동할수 없음
         foreach (var line in Lines)
         {
             if (line.Keyword is not KeywordType.Goto || line.Tokens.Count < 2 || line.Tokens[1].Type is not TokenType.Name)

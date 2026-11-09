@@ -1,6 +1,6 @@
 # Native JS 사용하기
 
-이 페이지는 JyunoSdk **0.3.0** (Jyuno **1.4.2**) 기준입니다. Native JS가 무엇인지는 [[소개|Native-JS]]를 먼저 보세요.
+이 페이지는 JyunoSdk **0.4.0** (Jyuno **1.5.1**) 기준입니다. Native JS가 무엇인지는 [[소개|Native-JS]]를 먼저 보세요.
 
 ## 1. 명령어로 변환하기
 
@@ -32,7 +32,7 @@ bad.jyuno:10: 오류: Native JS 제약: goto로 블록(if, while, repeat, for) �
 만들어진 파일은 한 개의 독립된 스크립트입니다.
 
 ```js
-// hello.jyuno → Jyuno Native JS (JyunoSdk 0.3.0, Jyuno 1.4.2)
+// hello.jyuno → Jyuno Native JS (JyunoSdk 0.4.0, Jyuno 1.5.1)
 // Node.js: node <이 파일>.js  ·  브라우저/모듈: JyunoProgram.run({ input, write, host })
 var JyunoProgram = (function () {
   // ① Jyuno 런타임 (값 표현, 연산, 내장 명령어, 오류 메시지)
@@ -127,6 +127,7 @@ const result = program.run({
 | `JList`, `newArray`, `newList` | Jyuno 배열/리스트 |
 | `str`, `describe`, `typeName` | 값을 문자열로, 출력용 표현으로, 타입 이름으로 |
 | `tryInt`, `tryReal`, `truthy` | 정수/실수로 읽기, 참거짓 판정 |
+| `JStruct` | 구조체 값 (`value instanceof JStruct`). `typeName`(구조체 이름), `fieldNames`(필드 이름, 만든 순서), `field('이름')`으로 읽음. 호스트 함수가 받은 구조체 값은 복사본 |
 
 값 표현은 [[동작 원리|Native-JS-Internals#값-표현]]에 정리되어 있습니다.
 

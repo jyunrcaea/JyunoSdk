@@ -23,6 +23,7 @@ const EARLY_NULL = new Early(null);
 // - 필드/구조체 함수는 'f_' + 이름 속성 (아직 없다면 U), $o는 만들어진 순서의 속성 이름 (생성이 끝나면 바뀌지 않으므로 복사본과 공유)
 // - 프로토타입: $name(구조체 이름), $line(struct 줄, 같은 구조체인지 비교), $jn(속성 이름 → Jyuno 이름), $copy(m)(깊은 복사)
 class JStruct {
+  get typeName() { return this.$name; }
   fieldProps() { const r = []; for (const p of this.$o) { const v = this[p]; if (v !== U && typeof v !== 'function') r.push(p); } return r; }
   get fieldNames() { return this.fieldProps().map((p) => this.$jn[p]); }
   field(name) { for (const p of this.fieldProps()) if (this.$jn[p] === name) { const v = this[p]; return v instanceof JConst ? v.v : v; } return undefined; }

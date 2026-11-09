@@ -250,7 +250,7 @@ console.writeline (div x 0)") },
         }
     }
 
-    static string? FindNode()
+    internal static string? FindNode()
     {
         string exe = OperatingSystem.IsWindows() ? "node.exe" : "node";
         foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator , StringSplitOptions.RemoveEmptyEntries))

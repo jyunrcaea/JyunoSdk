@@ -50,10 +50,12 @@ public enum BlockKind
     While,
     Repeat,
     For,
-    Func
+    Func,
+    /// <summary>struct ~ endstruct (Jyuno 1.5.0부터)</summary>
+    Struct
 }
 
-/// <summary>if/while/repeat/for ... end 또는 func ... endfunc 블록</summary>
+/// <summary>if/while/repeat/for ... end, func ... endfunc 또는 struct ... endstruct 블록</summary>
 public sealed class Block
 {
     internal Block(BlockKind kind , int open , Block? parent)
@@ -66,19 +68,21 @@ public sealed class Block
     public int OpenLine { get; }
     /// <summary>if 블록의 else 줄 (없다면 -1)</summary>
     public int ElseLine { get; internal set; } = -1;
-    /// <summary>블록을 닫는 end/endfunc 줄 (닫히지 않았다면 -1)</summary>
+    /// <summary>블록을 닫는 end/endfunc/endstruct 줄 (닫히지 않았다면 -1)</summary>
     public int CloseLine { get; internal set; } = -1;
     /// <summary>블록에 속하는 마지막 줄 (닫혔다면 CloseLine, 아니라면 블록이 끝나는 것으로 보는 줄)</summary>
     public int EndLine { get; internal set; }
     public bool IsClosed => CloseLine >= 0;
     public bool IsLoop => Kind is BlockKind.While or BlockKind.Repeat or BlockKind.For;
+    /// <summary>본문을 따로 실행하는 블록인지 (func 또는 struct)</summary>
+    public bool IsBody => Kind is BlockKind.Func or BlockKind.Struct;
     public Block? Parent { get; }
-    /// <summary>블록이 만드는 변수 영역 (func와 for만)</summary>
+    /// <summary>블록이 만드는 변수 영역 (func, struct, for만)</summary>
     public Scope? Scope { get; internal set; }
-    /// <summary>func 블록의 파라미터 이름 (param이 나온 순서)</summary>
+    /// <summary>func/struct 블록의 파라미터 이름 (param이 나온 순서)</summary>
     public IReadOnlyList<string> Parameters => parameters;
     internal readonly List<string> parameters = new();
-    /// <summary>func 블록의 함수 이름 (형식이 잘못되었다면 null)</summary>
+    /// <summary>func 블록의 함수 이름 또는 struct 블록의 구조체 이름 (형식이 잘못되었다면 null)</summary>
     public string? FunctionName { get; internal set; }
     public bool Contains(int line) => OpenLine < line && line <= EndLine;
 }
@@ -90,10 +94,12 @@ public enum ScopeKind
     /// <summary>함수 호출 한번</summary>
     Function,
     /// <summary>for 반복 한번</summary>
-    Loop
+    Loop,
+    /// <summary>구조체 값 하나 (struct와 endstruct 사이의 생성자, Jyuno 1.5.0부터)</summary>
+    Struct
 }
 
-/// <summary>변수 영역 (스크립트 최상위, 함수, for 반복)</summary>
+/// <summary>변수 영역 (스크립트 최상위, 함수, for 반복, 구조체)</summary>
 public sealed class Scope
 {
     internal Scope(ScopeKind kind , Scope? parent , Block? block)
@@ -110,8 +116,8 @@ public sealed class Scope
         for (Scope? scope = this ; scope is not null ; scope = scope.Parent)
             yield return scope;
     }
-    /// <summary>가장 가까운 함수 영역 (함수 밖이라면 null)</summary>
-    public Scope? Function => Chain().FirstOrDefault(s => s.Kind is ScopeKind.Function);
+    /// <summary>가장 가까운 함수 또는 구조체 생성자 영역 (밖이라면 null)</summary>
+    public Scope? Function => Chain().FirstOrDefault(s => s.Kind is ScopeKind.Function or ScopeKind.Struct);
     internal readonly Dictionary<string , Symbol> symbols = new();
     public IReadOnlyDictionary<string , Symbol> Symbols => symbols;
 }
@@ -124,7 +130,9 @@ public enum SymbolKind
     Label,
     Constant,
     Local,
-    LoopVariable
+    LoopVariable,
+    /// <summary>struct로 만든 구조체 (Jyuno 1.5.0부터)</summary>
+    Struct
 }
 
 /// <summary>스크립트에서 만든 이름 하나 (같은 영역의 같은 이름은 하나의 심볼)</summary>
@@ -141,10 +149,10 @@ public sealed class Symbol
     public List<NameOccurrence> Definitions { get; } = new();
     public List<NameOccurrence> References { get; } = new();
     public IEnumerable<NameOccurrence> Occurrences => Definitions.Concat(References).OrderBy(o => o.Line).ThenBy(o => o.Start);
-    /// <summary>함수라면 func 블록</summary>
+    /// <summary>함수라면 func 블록, 구조체라면 struct 블록</summary>
     public Block? FunctionBlock { get; internal set; }
-    /// <summary>모든 정의가 func인지 (값을 읽을수 없는 이름)</summary>
-    public bool IsOnlyFunction => Definitions.Count > 0 && Definitions.All(d => d.Role is OccurrenceRole.Function);
+    /// <summary>모든 정의가 func 또는 struct인지 (값을 읽을수 없는 이름)</summary>
+    public bool IsOnlyFunction => Definitions.Count > 0 && Definitions.All(d => d.Role is OccurrenceRole.Function or OccurrenceRole.Struct);
     public NameOccurrence? FirstDefinition => Definitions.OrderBy(d => d.Line).ThenBy(d => d.Start).FirstOrDefault();
 }
 
@@ -166,6 +174,8 @@ public enum OccurrenceRole
     Local,
     /// <summary>for (이름) ...</summary>
     LoopVariable,
+    /// <summary>struct (이름)</summary>
+    Struct,
     /// <summary>식 맨 앞의 이름 (함수 호출, 변수 읽기, 배열/리스트 인덱스)</summary>
     Call,
     /// <summary>인자 자리의 이름 (변수의 값 읽기)</summary>
@@ -196,6 +206,11 @@ public sealed class NameOccurrence
     public Builtin? Builtin { get; internal set; }
     /// <summary>프로그램이 제공한다고 설정한 이름인지</summary>
     public bool IsHostName { get; internal set; }
+    /// <summary>
+    /// 구조체 값의 멤버 이름(변수.필드, 변수.구조체 함수)으로 보이는 이름이라면, 점 앞의 변수 심볼
+    /// (예: me.name의 me, l.from.x의 l.from 또는 l) 구조체 값을 대입하면 Jyuno가 멤버 이름을 선언하므로 정의되지 않은 이름으로 보지 않음
+    /// </summary>
+    public Symbol? MemberOf { get; internal set; }
     public bool IsDefinition => Role is not (OccurrenceRole.Call or OccurrenceRole.Read or OccurrenceRole.Deletion);
     /// <summary>바깥 변수를 바꿀수도 있는 정의 (일반 대입)</summary>
     internal bool IsWeakDefinition => Role is OccurrenceRole.Assignment;
@@ -233,7 +248,7 @@ public sealed class LineInfo
     public Scope Scope { get; internal set; } = null!;
     /// <summary>들여쓰기 깊이 (포맷팅에서 사용)</summary>
     public int Depth { get; internal set; }
-    /// <summary>이 줄에서 열거나 닫는 블록 (if/else/end/func/endfunc 등의 줄)</summary>
+    /// <summary>이 줄에서 열거나 닫는 블록 (if/else/end/func/endfunc/struct/endstruct 등의 줄)</summary>
     public Block? Block { get; internal set; }
     public List<NameOccurrence> Names { get; } = new();
     public List<CallSite> Calls { get; } = new();

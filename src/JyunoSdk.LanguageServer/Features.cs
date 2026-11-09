@@ -8,10 +8,10 @@ namespace JyunoSdk.LanguageServer;
 public sealed partial class JyunoLanguageServer
 {
     //LSP CompletionItemKind / SymbolKind
-    const int CompletionFunction = 3, CompletionVariable = 6, CompletionKeyword = 14, CompletionSnippet = 15, CompletionConstant = 21, CompletionValue = 12;
-    const int SymbolFunction = 12, SymbolVariable = 13, SymbolConstant = 14, SymbolKey = 20;
+    const int CompletionStruct = 22, CompletionFunction = 3, CompletionVariable = 6, CompletionKeyword = 14, CompletionSnippet = 15, CompletionConstant = 21, CompletionValue = 12;
+    const int SymbolFunction = 12, SymbolVariable = 13, SymbolConstant = 14, SymbolKey = 20, SymbolStruct = 23;
 
-    public static readonly string[] SemanticTokenTypes = { "keyword" , "function" , "variable" , "parameter" , "string" , "number" , "operator" , "label" };
+    public static readonly string[] SemanticTokenTypes = { "keyword" , "function" , "variable" , "parameter" , "string" , "number" , "operator" , "label" , "struct" };
     public static readonly string[] SemanticTokenModifiers = { "declaration" , "readonly" , "defaultLibrary" };
 
     #region 설명
@@ -25,13 +25,15 @@ public sealed partial class JyunoLanguageServer
             return builtin.ToMarkdown();
         if (name.IsHostName)
             return $"```jyuno\n{name.Name}\n```\n*프로그램이 제공하는 함수/변수*";
+        if (name.MemberOf is Symbol owner)
+            return $"```jyuno\n{name.Name}\n```\n*구조체 값의 멤버 (변수 '{owner.Name}'에 구조체 값을 넣으면 선언되는 필드 또는 구조체 함수)*";
         return null;
     }
 
     static string Signature(Symbol symbol)
     {
         var parameters = symbol.FunctionBlock?.Parameters ?? Array.Empty<string>();
-        return "func " + symbol.Name + string.Concat(parameters.Select(p => $" ({p})"));
+        return (symbol.Kind is SymbolKind.Struct ? "struct " : "func ") + symbol.Name + string.Concat(parameters.Select(p => $" ({p})"));
     }
 
     static string DescribeSymbol(JyunoDocument document , Symbol symbol)
@@ -41,6 +43,7 @@ public sealed partial class JyunoLanguageServer
         string scope = symbol.Scope.Kind switch {
             ScopeKind.Script => "스크립트 최상위",
             ScopeKind.Function => $"함수 '{symbol.Scope.Block?.FunctionName ?? "?"}'",
+            ScopeKind.Struct => $"구조체 '{symbol.Scope.Block?.FunctionName ?? "?"}'",
             _ => "for 반복"
         };
         string code, kind;
@@ -48,7 +51,11 @@ public sealed partial class JyunoLanguageServer
         {
             case SymbolKind.Function:
                 code = Signature(symbol);
-                kind = "함수";
+                kind = symbol.Scope.Kind is ScopeKind.Struct ? "구조체 함수" : "함수";
+                break;
+            case SymbolKind.Struct:
+                code = Signature(symbol);
+                kind = "구조체 (호출하면 구조체 값을 만듦)";
                 break;
             case SymbolKind.Parameter:
                 int index = symbol.Scope.Block?.Parameters.ToList().IndexOf(symbol.Name) ?? -1;
@@ -129,11 +136,17 @@ public sealed partial class JyunoLanguageServer
         {
             foreach (var keyword in Keywords.All)
             {
-                if (keyword.Type is KeywordType.Param or KeywordType.EndFunc && line.Scope.Function is null)
+                //param은 func/struct 안, endfunc는 func 안, endstruct는 struct 안에서만
+                ScopeKind? body = line.Scope.Function?.Kind;
+                if (keyword.Type is KeywordType.Param && body is null)
+                    continue;
+                if (keyword.Type is KeywordType.EndFunc && body is not ScopeKind.Function)
+                    continue;
+                if (keyword.Type is KeywordType.EndStruct && body is not ScopeKind.Struct)
                     continue;
                 add(keyword.Name , CompletionKeyword , "키워드" , keyword.ToMarkdown() , "2");
                 if (snippet_support && keyword.Snippet is string snippet)
-                    add(keyword.Name + " … " + (keyword.Type is KeywordType.Func ? "endfunc" : "end") , CompletionSnippet , "블록" , keyword.ToMarkdown() , "2" , snippet);
+                    add(keyword.Name + " … " + (keyword.Type switch { KeywordType.Func => "endfunc" , KeywordType.Struct => "endstruct" , _ => "end" }) , CompletionSnippet , "블록" , keyword.ToMarkdown() , "2" , snippet);
             }
         }
         foreach (var symbol in document.VisibleSymbols(line_index))
@@ -142,10 +155,11 @@ public sealed partial class JyunoLanguageServer
                 continue;
             int kind = symbol.Kind switch {
                 SymbolKind.Function => CompletionFunction,
+                SymbolKind.Struct => CompletionStruct,
                 SymbolKind.Constant or SymbolKind.Label => CompletionConstant,
                 _ => CompletionVariable
             };
-            string detail = symbol.Kind is SymbolKind.Function ? Signature(symbol) : symbol.Kind switch {
+            string detail = symbol.Kind is SymbolKind.Function or SymbolKind.Struct ? Signature(symbol) : symbol.Kind switch {
                 SymbolKind.Parameter => "파라미터",
                 SymbolKind.Label => "레이블",
                 SymbolKind.Constant => "상수",
@@ -218,7 +232,7 @@ public sealed partial class JyunoLanguageServer
             active = started - 1;
 
         JsonArray signatures = new();
-        if (call.Head.Symbol is Symbol { Kind: SymbolKind.Function } symbol)
+        if (call.Head.Symbol is Symbol { Kind: SymbolKind.Function or SymbolKind.Struct } symbol)
         {
             var parameters = symbol.FunctionBlock?.Parameters ?? Array.Empty<string>();
             signatures.Add(new JsonObject {
@@ -308,7 +322,7 @@ public sealed partial class JyunoLanguageServer
             JsonArray flat = new();
             foreach (var symbol in document.Symbols)
             {
-                foreach (var def in symbol.Kind is SymbolKind.Function ? symbol.Definitions.Where(d => d.Role is OccurrenceRole.Function) : symbol.Definitions.Take(1))
+                foreach (var def in symbol.Kind is SymbolKind.Function or SymbolKind.Struct ? symbol.Definitions.Where(d => d.Role is OccurrenceRole.Function or OccurrenceRole.Struct) : symbol.Definitions.Take(1))
                 {
                     flat.Add(new JsonObject {
                         ["name"] = symbol.Name ,
@@ -325,6 +339,7 @@ public sealed partial class JyunoLanguageServer
 
     static int SymbolKindOf(Symbol symbol) => symbol.Kind switch {
         SymbolKind.Function => SymbolFunction,
+        SymbolKind.Struct => SymbolStruct,
         SymbolKind.Constant => SymbolConstant,
         SymbolKind.Label => SymbolKey,
         _ => SymbolVariable
@@ -340,16 +355,16 @@ public sealed partial class JyunoLanguageServer
         {
             foreach (var symbol in s.Symbols.Values)
             {
-                if (symbol.Kind is SymbolKind.Function)
+                if (symbol.Kind is SymbolKind.Function or SymbolKind.Struct)
                 {
-                    foreach (var def in symbol.Definitions.Where(d => d.Role is OccurrenceRole.Function))
+                    foreach (var def in symbol.Definitions.Where(d => d.Role is OccurrenceRole.Function or OccurrenceRole.Struct))
                     {
                         var block = document.Lines[def.Line].Block;
                         int end_line = block?.EndLine ?? def.Line;
                         JsonObject item = new() {
                             ["name"] = symbol.Name ,
                             ["detail"] = Signature(symbol) ,
-                            ["kind"] = SymbolFunction ,
+                            ["kind"] = SymbolKindOf(symbol) ,
                             ["range"] = Range(def.Line , 0 , end_line , document.Lines[end_line].Text.Length) ,
                             ["selectionRange"] = Range(def) ,
                         };
@@ -452,7 +467,7 @@ public sealed partial class JyunoLanguageServer
     /// <summary>의미 토큰 (LSP 형식으로 인코딩하기 전): (줄, 시작, 길이, 종류, 수식자)</summary>
     public static IEnumerable<(int Line, int Start, int Length, int Type, int Modifiers)> ClassifyTokens(JyunoDocument document)
     {
-        const int Keyword = 0, Function = 1, Variable = 2, Parameter = 3, String = 4, Number = 5, Operator = 6, Label = 7;
+        const int Keyword = 0, Function = 1, Variable = 2, Parameter = 3, String = 4, Number = 5, Operator = 6, Label = 7, Struct = 8;
         const int Declaration = 1, Readonly = 2, DefaultLibrary = 4;
         foreach (var line in document.Lines)
         {
@@ -480,6 +495,7 @@ public sealed partial class JyunoLanguageServer
                             switch (symbol.Kind)
                             {
                                 case SymbolKind.Function: type = Function; break;
+                                case SymbolKind.Struct: type = Struct; break;
                                 case SymbolKind.Parameter: type = Parameter; break;
                                 case SymbolKind.Label: type = Label; break;
                                 case SymbolKind.Constant: modifiers |= Readonly; break;
