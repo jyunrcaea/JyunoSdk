@@ -14,12 +14,13 @@
     <PackageProjectUrl>https://github.com/jyunrcaea/JyunoSdk</PackageProjectUrl>
     <RepositoryUrl>https://github.com/jyunrcaea/JyunoSdk</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- NuGet에 보이는 README는 영어판(README.nuget.md). README.md를 고치면 같이 고쳐 주세요 -->
+    <PackageReadmeFile>README.nuget.md</PackageReadmeFile>
   </PropertyGroup>
 
-  <!-- 모든 패키지(JyunoSdk, JyunoSdk.Analysis, JyunoSdk.LanguageServer, JyunoSdk.NativeJs)에 저장소 README를 포함 -->
+  <!-- 모든 패키지(JyunoSdk, JyunoSdk.Analysis, JyunoSdk.LanguageServer, JyunoSdk.NativeJs)에 영어 README를 포함 -->
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)README.nuget.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
   <!--
