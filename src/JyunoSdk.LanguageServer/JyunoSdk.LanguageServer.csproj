@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>JyunoSdk.LanguageServer</RootNamespace>
     <PackageId>JyunoSdk.LanguageServer</PackageId>
-    <Description>Jyuno 언어 서버 (LSP). VS Code 등 LSP를 지원하는 편집기에서 진단, 자동 완성, 정의로 이동 등을 제공합니다.</Description>
+    <Description>Jyuno language server (LSP). Provides diagnostics, completion, go to definition and more in VS Code and other editors that support LSP.</Description>
   </PropertyGroup>
 
   <ItemGroup>
