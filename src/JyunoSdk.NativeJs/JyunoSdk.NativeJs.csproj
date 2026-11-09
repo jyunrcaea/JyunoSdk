@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>JyunoSdk.NativeJs</RootNamespace>
     <PackageId>JyunoSdk.NativeJs</PackageId>
-    <Description>Jyuno 스크립트를 런타임이 포함된 JavaScript 코드(Native JS)로 변환합니다. 브라우저나 Node.js에서 .NET 없이 실행할수 있습니다.</Description>
+    <Description>Translates Jyuno scripts into JavaScript code with the runtime included (Native JS), which runs in a browser or Node.js without .NET.</Description>
     <PackageTags>jyuno;javascript;transpiler;native-js</PackageTags>
   </PropertyGroup>
 
