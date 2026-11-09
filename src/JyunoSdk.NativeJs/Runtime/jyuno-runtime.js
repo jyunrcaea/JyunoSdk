@@ -360,6 +360,12 @@ function sameKey(v) {
   return v; // 컬렉션은 참조
 }
 function colSub(first, remove) {
+  const all = remove instanceof JList ? remove.a : [remove];
+  if (all.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교
+    const items = [];
+    for (const x of first.a) if (!all.some((y) => sameS(x, y))) items.push(x);
+    return createLike(first, items);
+  }
   const set = new Set();
   const add = (x) => { const k = sameKey(x); if (k !== null) set.add(k); };
   if (remove instanceof JList) remove.a.forEach(add); else add(remove);
@@ -862,6 +868,11 @@ function addCollectionBuiltins() {
     });
     f('distinct', (args, name) => {
       const list = colTarget(args, name);
+      if (list.a.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교 (키를 만들수 없으므로 하나씩)
+        const items = [];
+        for (const x of list.a) if (!items.some((y) => sameS(y, x))) items.push(x); // NaN은 어떤 값과도 같지 않음
+        return createLike(list, items);
+      }
       const seen = new Set(), items = [];
       for (const x of list.a) {
         const k = sameKey(x);

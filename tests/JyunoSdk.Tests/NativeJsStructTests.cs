@@ -852,7 +852,17 @@ b = make 20
 console.writeline (a.get)
 console.writeline (b.get)
 console.writeline (equal (make 1) (make 2))
-console.writeline (equal a b)")
+console.writeline (equal a b)"),
+        P("collection_equality" , @"
+struct pt
+  param x
+endstruct
+a = pt 1
+b = pt 1
+console.writeline (length (list.distinct (list a b (pt 2) a)))
+console.writeline (length (sub (list a b (pt 2)) (pt 1)))
+console.writeline (list.remove (list a b) (pt 1))
+console.writeline (list.join (list a b) "","")")
     };
 
     //오류는 마지막 줄에서 나도록 (MatchesInterpreter가 마지막 줄의 오류 메시지를 비교)
