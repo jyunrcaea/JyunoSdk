@@ -142,20 +142,30 @@ sealed class LineParser
             }
             case KeywordType.Param:
             case KeywordType.Func:
+            case KeywordType.Struct:
             {
+                OccurrenceRole role = keyword switch {
+                    KeywordType.Func => OccurrenceRole.Function,
+                    KeywordType.Struct => OccurrenceRole.Struct,
+                    _ => OccurrenceRole.Parameter
+                };
                 if (count != 2 || !IsName(1))
                 {
-                    string message = keyword is KeywordType.Func ? "func 다음에는 함수 이름 하나만 와야 합니다." : "param 다음에는 파라미터 이름 하나만 와야 합니다.";
+                    string message = keyword switch {
+                        KeywordType.Func => "func 다음에는 함수 이름 하나만 와야 합니다.",
+                        KeywordType.Struct => "struct 다음에는 구조체 이름 하나만 와야 합니다.",
+                        _ => "param 다음에는 파라미터 이름 하나만 와야 합니다."
+                    };
                     Report(DiagnosticCodes.KeywordSyntax , DiagnosticSeverity.Error , message , head.Start , tokens[count - 1].End);
                     if (IsName(1))
-                        Name(1 , keyword is KeywordType.Func ? OccurrenceRole.Function : OccurrenceRole.Parameter);
+                        Name(1 , role);
                     break;
                 }
-                Name(1 , keyword is KeywordType.Func ? OccurrenceRole.Function : OccurrenceRole.Parameter);
+                Name(1 , role);
                 break;
             }
             default:
-                //else, end, endfunc, break: 뒤의 내용은 사용하지 않음
+                //else, end, endfunc, endstruct, break: 뒤의 내용은 사용하지 않음
                 Ignored(1 , $"{name} 뒤의 내용은 무시됩니다.");
                 break;
         }

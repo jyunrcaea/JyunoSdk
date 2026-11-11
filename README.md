@@ -140,9 +140,9 @@ vim.lsp.enable('jyuno')
 | 코드 | 심각도 | 설명 |
 | --- | --- | --- |
 | JY1001 | 오류 | 토큰화 오류 (닫히지 않은 문자열, long 범위를 넘는 정수) |
-| JY1002 | 오류 | 블록 구조 오류 (end/endfunc 짝, else, break, param 위치) |
+| JY1002 | 오류 | 블록 구조 오류 (end/endfunc/endstruct 짝, else, break, param 위치) |
 | JY1003 | 오류 | 닫히지 않은 괄호 |
-| JY1004 | 오류 | 키워드 형식 오류 (func/param/for/local) |
+| JY1004 | 오류 | 키워드 형식 오류 (func/struct/param/for/local) |
 | JY1005 | 오류 | 줄 맨 앞이 아닌 곳에 쓴 키워드 |
 | JY1006 | 오류 | goto로 함수 안팎을 넘나듦 |
 | JY2001 | 경고 | 정의되지 않은 함수/변수 |
@@ -171,6 +171,8 @@ node hello.js                          # 표준 입출력으로 실행
 | 내장 함수/상수(`add`, `mul`, `console.writeline`, `true`, `math.pi` 등)와 프로그램이 제공하는 함수를 재정의/대입할수 없음 | `add = 1`, `func mul`, `5 = true`, `for add 'abc'` |
 | goto로 블록(if, while, repeat, for) 안쪽으로 들어갈수 없음 | `goto inner` (inner가 if 안) |
 | 블록 구조 오류(짝이 없는 end 등)는 실행 전에 알려줌 | |
+| 구조체(`struct`) 생성자 안에서 다른 구조체를 정의할수 없음 | `struct a` 안의 `struct b` |
+| 구조체 값을 담은 변수의 멤버 이름(`p.x`, `p.show`)을 `func`/`local`/`param`/`struct`로 다시 정의할수 없음 (실행 중 오류) | `p = point 1 2` 다음의 `func p.show` |
 
 프로그램이 제공하는 변수(`console.title` 등)에 값을 대입하는건 허용됩니다. 계산된 goto 대상이 블록 안쪽이라면 실행 중에 `Native JS 제약` 오류가 납니다.
 `file.*`, `directory.*` 명령어는 지원하지 않습니다.
@@ -187,7 +189,7 @@ const result = program.run({
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 호스트 함수는 변환할 때도 그 이름을 알려줘야 합니다. (아래 라이브러리 예처럼 `Globals`에 넣지 않으면 "존재하지 않는 함수"로 변환됩니다)
-호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JyunoError`, `str`, `typeName` 등)을 사용합니다.
+호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName` 등)을 사용합니다. 호스트 함수가 받은 구조체 값은 복사본이며, `typeName`, `fieldNames`, `field('이름')`으로 읽을수 있습니다.
 
 ### 라이브러리
 ```cs

@@ -142,9 +142,9 @@ vim.lsp.enable('jyuno')
 | Code | Severity | Description |
 | --- | --- | --- |
 | JY1001 | Error | Tokenization error (unclosed string, integer out of long range) |
-| JY1002 | Error | Block structure error (end/endfunc pairs, else, break, param placement) |
+| JY1002 | Error | Block structure error (end/endfunc/endstruct pairs, else, break, param placement) |
 | JY1003 | Error | Unclosed parenthesis |
-| JY1004 | Error | Keyword format error (func/param/for/local) |
+| JY1004 | Error | Keyword format error (func/struct/param/for/local) |
 | JY1005 | Error | Keyword used somewhere other than the start of a line |
 | JY1006 | Error | goto jumps into or out of a function |
 | JY2001 | Warning | Undefined function/variable |
@@ -173,6 +173,8 @@ Because variables and functions are translated into fixed slots and called direc
 | Built-in functions/constants (`add`, `mul`, `console.writeline`, `true`, `math.pi`, etc.) and functions provided by the program can't be redefined/assigned to | `add = 1`, `func mul`, `5 = true`, `for add 'abc'` |
 | goto can't jump into a block (if, while, repeat, for) | `goto inner` (inner is inside an if) |
 | Block structure errors (an unmatched end, etc.) are reported before running | |
+| A struct (`struct`) can't be defined inside another struct's constructor | `struct b` inside `struct a` |
+| Member names of a variable holding a struct value (`p.x`, `p.show`) can't be redefined with `func`/`local`/`param`/`struct` (run-time error) | `func p.show` after `p = point 1 2` |
 
 Assigning a value to a variable provided by the program (such as `console.title`) is allowed. If a computed goto target is inside a block, a `Native JS 제약` (Native JS restriction) error is raised at run time.
 The `file.*` and `directory.*` commands are not supported.
@@ -189,7 +191,7 @@ const result = program.run({
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 Host functions must also be named at translation time. (If they are not put in `Globals` as in the library example below, they are translated as "nonexistent functions".)
-To work with Jyuno values in host functions, use `program.runtime` (`JList`, `JDouble`, `JyunoError`, `str`, `typeName`, etc.).
+To work with Jyuno values in host functions, use `program.runtime` (`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName`, etc.). A struct value passed to a host function is a copy; read it with `typeName`, `fieldNames` and `field('name')`.
 
 ### Library
 ```cs

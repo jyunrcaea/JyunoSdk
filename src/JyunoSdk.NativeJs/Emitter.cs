@@ -20,11 +20,24 @@ sealed class Emitter
         this.analysis = analysis;
         this.globals = globals;
         this.options = options;
+        //구조체 (Jyuno 1.5.0): 구조체가 없는 스크립트는 이전과 똑같은 코드를 만듦
+        foreach (FunctionStatement f in analysis.Functions)
+        {
+            if (!f.IsStruct || f.Name is null)
+                continue;
+            structs.Add(f);
+            foreach (var (name , kinds) in f.InnerScope.Names)
+                member_kinds[name] = member_kinds.TryGetValue(name , out NameKinds k) ? k | kinds : kinds;
+        }
     }
+    //struct 문장들과, 구조체 영역에 만들어질수 있는 이름(멤버) → 종류 (모든 구조체를 합침)
+    readonly List<FunctionStatement> structs = new();
+    readonly Dictionary<string , NameKinds> member_kinds = new();
+    bool has_structs => structs.Count > 0;
 
     //─────────── 출력 ───────────
     //줄 번호: Jyuno 줄(0부터), -1: 대응하는 줄 없음, -2: 함수 머리(오류는 호출한 줄)
-    readonly List<(string Code, int Line)> output = new();
+    List<(string Code, int Line)> output = new();
     void emit(string code , int line) => output.Add((code , line));
 
     readonly Dictionary<string , (string Var, string What, string Name)> host_refs = new();
@@ -57,7 +70,10 @@ sealed class Emitter
         }
         return sb.ToString();
     }
-    static string slot(Scope scope , string name) => $"${scope.Id}_{mangle(name)}";
+    //구조체 영역(구조체 값 하나)의 이름은 구조체 값 객체의 속성
+    static string slot(Scope scope , string name) => scope.Kind is ScopeKind.Struct ? $"{self_of(scope)}.{prop(name)}" : $"${scope.Id}_{mangle(name)}";
+    static string self_of(Scope scope) => $"$s{scope.Id}";
+    static string prop(string name) => "f_" + mangle(name);
 
     public static string Quote(string text)
     {
@@ -187,7 +203,7 @@ sealed class Emitter
             return m;
         }
     }
-    sealed class Fn { public int Temps; }
+    sealed class Fn { public int Temps; public string? Self; }
     sealed class Cx
     {
         public Cx(Scope scope , Fn fn , State state) { Scope = scope; Fn = fn; St = state; }
@@ -219,23 +235,50 @@ sealed class Emitter
     }
     static string temp(Cx cx) => $"$t{cx.Fn.Temps++}";
 
-    sealed record Part(Scope Scope , string Slot , bool Definite , NameKinds Kinds);
-    static (List<Part> Parts, bool Definite) chain(Cx cx , string name)
+    //Test: 이 영역에 이름이 있는지 검사하는 식 (null이면 'Slot !== U'), Self: 구조체 함수라면 this로 넘길 구조체 값
+    sealed record Part(Scope Scope , string Slot , bool Definite , NameKinds Kinds , string? Test = null , string? Self = null);
+    static string test(Part p) => p.Test ?? $"{p.Slot} !== U";
+    (List<Part> Parts, bool Definite) chain(Cx cx , string name)
     {
         List<Part> parts = new();
         for (Scope? x = cx.Scope ; x is not null ; x = x.Parent)
         {
+            //구조체 값을 담은 변수의 멤버 이름 (prefix.path): 인터프리터에서는 같은 영역에 선언된 이름
+            if (has_structs && name.Contains('.'))
+                alias_parts(cx , x , name , parts);
             if (!x.Names.TryGetValue(name , out NameKinds kinds))
                 continue;
             char s = get_status(cx , x , name);
             if (s is 'U')
                 continue;
-            parts.Add(new(x , slot(x , name) , s is 'D' , kinds));
+            parts.Add(new(x , slot(x , name) , s is 'D' , kinds , Self: x.Kind is ScopeKind.Struct ? self_of(x) : null));
             if (s is 'D')
                 return (parts, true);
         }
         return (parts, false);
     }
+
+    //x 영역의 변수(prefix)에 구조체 값이 있다면 prefix.m1.m2...는 그 구조체 값의 멤버
+    //짧은 prefix부터 (같은 이름을 직접 만든 것보다 먼저: 구조체 값을 넣을때 직접 만든 같은 이름은 지워짐)
+    void alias_parts(Cx cx , Scope x , string name , List<Part> parts)
+    {
+        for (int k = name.IndexOf('.') ; k > 0 ; k = name.IndexOf('.' , k + 1))
+        {
+            string prefix = name[..k];
+            string[] path = name[(k + 1)..].Split('.');
+            if (!x.Names.ContainsKey(prefix) || get_status(cx , x , prefix) is 'U')
+                continue;
+            if (path.Any(m => m.Length is 0 || !member_kinds.ContainsKey(m)) || path[..^1].Any(m => !member_kinds[m].HasFlag(NameKinds.Variable)))
+                continue;
+            string o = temp(cx), h = temp(cx);
+            StringBuilder t = new($"(({o} = {slot(x , prefix)}) instanceof JStruct && ");
+            foreach (string m in path[..^1])
+                t.Append($"({o} = {o}.{prop(m)}) instanceof JStruct && ");
+            t.Append($"({h} = {o}.{prop(path[^1])}) !== undefined && {h} !== U)");
+            parts.Add(new(x , $"{o}.{prop(path[^1])}" , false , member_kinds[path[^1]] , t.ToString() , o));
+        }
+    }
+    static bool callable(NameKinds kinds) => kinds is not NameKinds.None && (kinds & ~(NameKinds.Function | NameKinds.Struct)) is NameKinds.None;
     static bool only_var(NameKinds kinds) => kinds is NameKinds.Variable;
 
     string read_variable(Cx cx , string name)
@@ -246,7 +289,7 @@ sealed class Emitter
         {
             Part p = parts[i];
             string v = only_var(p.Kinds) ? p.Slot : $"$rv({p.Slot}, {Quote(name)})";
-            code = code is null ? v : $"({p.Slot} !== U ? {v} : {code})";
+            code = code is null ? v : $"({test(p)} ? {v} : {code})";
         }
         return code!;
     }
@@ -255,7 +298,7 @@ sealed class Emitter
     string assign_code(Cx cx , string name , string value)
     {
         var (parts , definite) = chain(cx , name);
-        string set(Part p) => only_var(p.Kinds) ? $"{p.Slot} = {value}" : $"{p.Slot} = $chkSet({p.Slot}, {Quote(name)}, {value})";
+        string set(Part p) => bind_clear(cx , p.Scope , name , p.Slot , only_var(p.Kinds) ? $"{p.Slot} = {value}" : $"{p.Slot} = $chkSet({p.Slot}, {Quote(name)}, {value})");
         string? code = null;
         G g = glob(name , out _);
         if (!definite)
@@ -265,13 +308,13 @@ sealed class Emitter
                 G.Var => $"{host_ref(name , "var")}.set({value})",
                 G.Const => "$constAssign()",
                 G.Builtin or G.Func => $"$notVar({Quote(name)})",
-                _ => $"{current} = {value}"
+                _ => bind_clear(cx , cx.Scope , name , current , $"{order_push(cx , cx.Scope , name , 'U')}{current} = {value}")
             };
         }
         for (int i = parts.Count - 1 ; i >= 0 ; i--)
         {
             Part p = parts[i];
-            code = code is null ? set(p) : $"({p.Slot} !== U ? {set(p)} : {code})";
+            code = code is null ? set(p) : $"({test(p)} ? {set(p)} : {code})";
         }
         if (!definite)
         {
@@ -283,6 +326,71 @@ sealed class Emitter
         }
         return code!;
     }
+
+    //구조체 영역에 이름이 새로 만들어지는 지점: 만들어진 순서(필드 순서)를 기록. status는 만들기 전 상태
+    string order_push(Cx cx , Scope scope , string name , char? status = null)
+    {
+        if (scope.Kind is not ScopeKind.Struct)
+            return "";
+        char s = status ?? get_status(cx , scope , name);
+        string push = $"{self_of(scope)}.$o.push({Quote(prop(name))})";
+        return s switch { 'D' => "" , 'U' => push + ", " , _ => $"({slot(scope , name)} === U && {push}), " };
+    }
+    //변수(name)에 값을 넣는 코드(code) 뒤에: 구조체 값이라면 같은 영역에 직접 만든 'name.멤버' 이름을 지움 (인터프리터에서 덮어써짐)
+    string bind_clear(Cx cx , Scope scope , string name , string target , string code)
+    {
+        if (!has_structs)
+            return code;
+        List<string> clears = new();
+        foreach (string other in scope.NameOrder)
+        {
+            if (other.Length <= name.Length + 1 || !other.StartsWith(name + "."))
+                continue;
+            string[] path = other[(name.Length + 1)..].Split('.');
+            if (path.Any(m => !member_kinds.ContainsKey(m)))
+                continue;
+            string s = slot(scope , other);
+            clears.Add($"{s} = $unbindIf({target}, {const_ref($"[{string.Join(", " , path.Select(m => Quote(prop(m))))}]")}, {s})");
+            if (get_status(cx , scope , other) is 'D')
+                set_status(cx , scope , other , 'M');
+        }
+        return clears.Count is 0 ? code : $"({code}, {string.Join(", " , clears)})";
+    }
+    //이름(name)을 지금 영역에 직접 정의(func, param, local, struct)할 때: 그 이름이 지금 구조체 값의 멤버 이름이라면 Native JS 제약
+    //(인터프리터는 멤버 이름 하나만 덮어쓰지만, Native JS는 멤버 이름을 사용하는 곳에서 찾으므로 지원하지 않음)
+    string alias_guard(Cx cx , string name , int line)
+    {
+        if (!has_structs || !name.Contains('.'))
+            return "";
+        List<Part> parts = new();
+        alias_parts(cx , cx.Scope , name , parts);
+        if (parts.Count is 0)
+            return "";
+        emit($"if ({string.Join(" || " , parts.Select(test))}) $aliasDefine({Quote(name)});" , line);
+        return "";
+    }
+    //변수/필드/컬렉션에 넣는 값: 구조체 값이라면 복사본 (구조체 값이 될수 없는 식은 그대로)
+    string own(Expression e , string code) => has_structs && may_struct(e) ? $"own({code})" : code;
+    static readonly HashSet<string> ElementResults = new() { "list.pop" , "list.removeat" , "array.min" , "array.max" , "list.min" , "list.max" };
+    bool may_struct(Expression e)
+    {
+        switch (e)
+        {
+            case ConstantExpression: return false;
+            case ParenthesisExpression p: return may_struct(p.Inner);
+            //내장 함수는 원소를 꺼내는 함수만 구조체 값을 돌려줄수 있음
+            case CallExpression call when glob(call.Name , out _) is G.Builtin: return ElementResults.Contains(call.Name);
+            default: return true;
+        }
+    }
+    //사용자 코드를 실행할수 있는 식 (구조체 값을 바꿀수 있음): 대입, 내장 함수가 아닌 호출
+    bool effects(Expression e) => e switch {
+        AssignExpression => true ,
+        CallExpression call => glob(call.Name , out _) is not (G.Builtin or G.Func) || call.Arguments.Any(effects) ,
+        ParenthesisExpression p => effects(p.Inner) ,
+        UnclosedParenthesisExpression u => effects(u.Inner) ,
+        _ => false
+    };
 
     //─────────── 식 ───────────
     readonly record struct Code(string Text , bool Bool = false , bool Early = false , string? Statement = null);
@@ -305,13 +413,13 @@ sealed class Emitter
             }
             case ConstantDefinitionExpression d:
             {
-                string code = $"({slot(cx.Scope , d.Name)} = new JConst({literal(d.Value)}), null)";
+                string code = $"({order_push(cx , cx.Scope , d.Name)}{slot(cx.Scope , d.Name)} = new JConst({literal(d.Value)}), null)";
                 set_status(cx , cx.Scope , d.Name , 'D');
                 return new(code);
             }
             case LabelExpression l:
             {
-                string code = $"({slot(cx.Scope , l.Name)} = {cx.Line}, null)";
+                string code = $"({order_push(cx , cx.Scope , l.Name)}{slot(cx.Scope , l.Name)} = {cx.Line}, null)";
                 set_status(cx , cx.Scope , l.Name , 'D');
                 return new(code);
             }
@@ -323,15 +431,19 @@ sealed class Emitter
                 string t = temp(cx);
                 if (rhs.Early)
                 {
-                    string a1 = assign_code(cx , a.Name , $"{t}.v");
-                    string a2 = assign_code(cx , a.Name , t);
+                    string a1 = assign_code(cx , a.Name , own(a.Value , $"{t}.v"));
+                    string a2 = assign_code(cx , a.Name , own(a.Value , t));
                     return new($"(({t} = {rhs.Text}) instanceof Early ? ({a1}, EARLY_NULL) : ({a2}, null))" , Early: true);
                 }
+                string value = own(a.Value , rhs.Text);
                 var (parts , definite) = chain(cx , a.Name);
                 if (definite && parts.Count is 1 && only_var(parts[0].Kinds))
-                    return new($"({parts[0].Slot} = {rhs.Text}, null)" , Statement: $"{parts[0].Slot} = {rhs.Text}");
+                {
+                    string direct = bind_clear(cx , parts[0].Scope , a.Name , parts[0].Slot , $"{parts[0].Slot} = {value}");
+                    return new($"({direct}, null)" , Statement: direct);
+                }
                 string assign = assign_code(cx , a.Name , t);
-                return new($"({t} = {rhs.Text}, {assign}, null)");
+                return new($"({t} = {value}, {assign}, null)");
             }
             case CallExpression call: return gen_call(cx , call);
             //삭제는 Native JS 제약으로 미리 걸러짐
@@ -340,7 +452,16 @@ sealed class Emitter
         throw new InvalidOperationException("알수없는 식 " + e.GetType().Name);
     }
 
-    List<string> gen_args(Cx cx , IReadOnlyList<Expression> args) => args.Select(a => gen(cx , a).Text).ToList();
+    List<string> gen_args(Cx cx , IReadOnlyList<Expression> args)
+    {
+        List<string> r = args.Select(a => gen(cx , a).Text).ToList();
+        //앞 인자가 변수의 구조체 값을 가리키는데 뒤 인자가 그 구조체 값을 바꿀수 있다면, 앞 인자를 미리 복사 (인터프리터는 읽을때 복사)
+        if (has_structs)
+            for (int i = 0 ; i < args.Count - 1 ; i++)
+                if (may_struct(args[i]) && args.Skip(i + 1).Any(effects))
+                    r[i] = $"own({r[i]})";
+        return r;
+    }
 
     //조건부로만 계산되는 코드 (상태를 합침)
     T conditional<T>(Cx cx , Func<T> f)
@@ -383,7 +504,12 @@ sealed class Emitter
                 {
                     var a = gen_args(cx , e.Arguments);
                     if (Fast.TryGetValue((e.Name, a.Count) , out string? fast))
+                    {
+                        //구조체가 있다면 equal은 구조체 값끼리도 비교하는 함수
+                        if (fast is "equal2" && has_structs)
+                            fast = "equalS2";
                         return new($"{fast}({string.Join(", " , a)})" , Bool: BoolResult.Contains(e.Name));
+                    }
                     if (e.Name is "bool" && a.Count is 1)
                         return new($"truthy({a[0]})" , Bool: true);
                     return new($"$B[{Quote(e.Name)}]([{string.Join(", " , a)}])" , Bool: BoolResult.Contains(e.Name));
@@ -419,16 +545,51 @@ sealed class Emitter
                     break;
             }
         }
-        string? holder = fallback;
-        for (int i = parts.Count - 1 ; i >= 0 ; i--)
+        //value: 영역 하나의 값 (구조체 함수라면 구조체 값을 this로 묶어야 하는 경우가 있음)
+        string holder_of(Func<Part , string> value)
         {
-            Part p = parts[i];
-            holder = holder is null ? p.Slot : $"({p.Slot} !== U ? {p.Slot} : {holder})";
+            string? h = fallback;
+            for (int i = parts.Count - 1 ; i >= 0 ; i--)
+            {
+                Part p = parts[i];
+                h = h is null ? value(p) : $"({test(p)} ? {value(p)} : {h})";
+            }
+            return h!;
         }
-        if (kinds is NameKinds.Function && !holder_fallback)
-            return new($"{holder}({string.Join(", " , gen_args(cx , e.Arguments))})");
-        if (!kinds.HasFlag(NameKinds.Function) && !kinds.HasFlag(NameKinds.Constant) && !holder_fallback)
-            return variable_call(cx , e , holder!);
+        if (callable(kinds) && !holder_fallback)
+        {
+            if (!parts.Any(p => p.Self is not null))
+                return new($"{holder_of(p => p.Slot)}({string.Join(", " , gen_args(cx , e.Arguments))})");
+            //구조체 함수: 'obj.f_name(...)' 형식이면 JS가 this를 넘김
+            if (definite && parts.Count is 1 && parts[0].Test is null)
+                return new($"{parts[0].Slot}({string.Join(", " , gen_args(cx , e.Arguments))})");
+            //후보가 적다면 갈래마다 'obj.f_name(인자)'로 직접 부름 (인자 코드는 갈래 수만큼 복제되지만 하나만 실행됨, .call보다 빠름)
+            if (parts.Count <= 2)
+            {
+                string arg_text = string.Join(", " , gen_args(cx , e.Arguments));
+                string? direct = fallback is null ? null : $"{fallback}({arg_text})";
+                for (int i = parts.Count - 1 ; i >= 0 ; i--)
+                {
+                    Part p = parts[i];
+                    direct = direct is null ? $"{p.Slot}({arg_text})" : $"({test(p)} ? {p.Slot}({arg_text}) : {direct})";
+                }
+                return new(direct!);
+            }
+            string f = temp(cx), self = temp(cx);
+            string? pick = fallback is null ? null : $"({f} = {fallback}, {self} = undefined)";
+            for (int i = parts.Count - 1 ; i >= 0 ; i--)
+            {
+                Part p = parts[i];
+                string one = $"({f} = {p.Slot}, {self} = {p.Self ?? "undefined"})";
+                pick = pick is null ? one : $"({test(p)} ? {one} : {pick})";
+            }
+            var call_args = gen_args(cx , e.Arguments);
+            return new($"({pick}, {f}.call({self}{string.Concat(call_args.Select(a => ", " + a))}))");
+        }
+        string holder = holder_of(p => p.Slot);
+        if (!kinds.HasFlag(NameKinds.Function) && !kinds.HasFlag(NameKinds.Struct) && !kinds.HasFlag(NameKinds.Constant) && !holder_fallback)
+            return variable_call(cx , e , holder);
+        holder = holder_of(p => p.Self is null ? p.Slot : $"$bm({p.Self}, {p.Slot})");
         //일반형: 함수면 호출, 변수면 값 (인자는 필요할 때만 계산)
         var args = conditional(cx , () => gen_args(cx , e.Arguments));
         return new($"$call({holder}, {(e.HasArguments ? "true" : "false")}, {(e.Closed ? "true" : "false")}, () => [{string.Join(", " , args)}])" , Early: e.Closed && e.HasArguments);
@@ -460,7 +621,7 @@ sealed class Emitter
     readonly Dictionary<Block , Dispatch> dispatches = new();
     readonly Dictionary<GotoStatement , List<(long Line, string Jump)>> jumps = new();
 
-    void plan_gotos(IEnumerable<GotoStatement> gotos)
+    void plan_gotos(IEnumerable<GotoStatement> gotos , string exit = "return null;")
     {
         foreach (GotoStatement g in gotos)
         {
@@ -470,7 +631,7 @@ sealed class Emitter
                 string jump;
                 switch (target.Kind)
                 {
-                    case GotoTargetKind.Exit: jump = "return null;"; break;
+                    case GotoTargetKind.Exit: jump = exit; break;
                     case GotoTargetKind.Continue: jump = $"continue $L{target.Statement!.Line};"; break;
                     default:
                     {
@@ -598,7 +759,8 @@ sealed class Emitter
                 State inner_state = cx.St.Clone();
                 inner_state[inner] = fresh(inner , each.VariableName);
                 Cx icx = new(inner , cx.Fn , inner_state);
-                var declarations = inner.NameOrder.Select(n => n == each.VariableName ? $"{slot(inner , n)} = {it}[{i}]" : $"{slot(inner , n)} = U");
+                string item = has_structs ? $"own({it}[{i}])" : $"{it}[{i}]";
+                var declarations = inner.NameOrder.Select(n => n == each.VariableName ? $"{slot(inner , n)} = {item}" : $"{slot(inner , n)} = U");
                 emit($"{{ const {it} = forItems({source}); {label}: for (let {i} = 0; {i} < {it}.length; {i}++) {{ let {string.Join(", " , declarations)};" , s.Line);
                 gen_block(icx , each.Body);
                 if (each.EndTokenError is string end_error)
@@ -606,6 +768,9 @@ sealed class Emitter
                 emit("} }" , each.EndLine);
                 return;
             }
+            case FunctionStatement { IsStruct: true } structure:
+                gen_struct(cx , structure);
+                return;
             case FunctionStatement function:
             {
                 if (function.Name is null)
@@ -613,7 +778,11 @@ sealed class Emitter
                     emit("$funcSyntax();" , s.Line);
                     return;
                 }
+                alias_guard(cx , function.Name , s.Line);
                 string function_slot = slot(cx.Scope , function.Name);
+                //구조체 함수(생성자 영역에서 정의한 함수): 구조체 정의마다 한번 만들고, 구조체 값은 this로 받음
+                bool method = cx.Scope.Kind is ScopeKind.Struct && function.InnerScope.Parent == cx.Scope;
+                string order = order_push(cx , cx.Scope , function.Name);
                 set_status(cx , cx.Scope , function.Name , 'D');
                 //함수 본문: 바깥 영역의 '없음'은 호출할 때 생길수 있으므로 '모름'
                 State st = new();
@@ -625,8 +794,19 @@ sealed class Emitter
                 var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}");
                 var declarations = function.InnerScope.NameOrder.Select(n => $"{slot(function.InnerScope , n)} = U").ToList();
                 string fname = mangle(function.Name);
-                emit($"{function_slot} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
-                emit("if ($depth >= 200) $tooDeep(); $depth++; try {" , -2);
+                List<(string, int)>? saved = null;
+                if (method)
+                {
+                    saved = output;
+                    output = new();
+                    emit($"const $m{s.Line} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
+                    emit($"const {self_of(cx.Scope)} = this; if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(function)}" , -2);
+                }
+                else
+                {
+                    emit($"{function_slot} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
+                    emit($"if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(function)}" , -2);
+                }
                 int temp_at = output.Count;
                 emit("" , s.Line);
                 if (declarations.Count > 0)
@@ -635,6 +815,12 @@ sealed class Emitter
                 emit("return null; } finally { $depth--; } };" , function.EndLine);
                 if (fn.Temps > 0)
                     output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , s.Line);
+                if (saved is not null)
+                {
+                    pending_methods.Peek().AddRange(output);
+                    output = saved;
+                    emit($"{order}{function_slot} = $m{s.Line};" , s.Line);
+                }
                 return;
             }
             case GotoStatement g:
@@ -662,7 +848,8 @@ sealed class Emitter
                     emit("$paramSyntax();" , s.Line);
                     return;
                 }
-                emit($"{slot(cx.Scope , p.Name)} = ($a{p.ParameterIndex} === undefined ? null : $a{p.ParameterIndex});" , s.Line);
+                alias_guard(cx , p.Name , s.Line);
+                emit($"{order_push(cx , cx.Scope , p.Name)}{slot(cx.Scope , p.Name)} = ($a{p.ParameterIndex} === undefined ? null : $a{p.ParameterIndex});" , s.Line);
                 set_status(cx , cx.Scope , p.Name , 'D');
                 return;
             case LocalStatement local:
@@ -682,12 +869,14 @@ sealed class Emitter
                     emit("$localForm();" , s.Line);
                     return;
                 }
-                string v = local.Value is not null ? gen(cx , local.Value).Text : "null";
+                string v = local.Value is not null ? own(local.Value , gen(cx , local.Value).Text) : "null";
+                alias_guard(cx , local.Name , s.Line);
                 string local_slot = slot(cx.Scope , local.Name);
+                string order = order_push(cx , cx.Scope , local.Name);
                 if (only_var(cx.Scope.Names[local.Name]))
-                    emit($"{local_slot} = {v};" , s.Line);
+                    emit($"{bind_clear(cx , cx.Scope , local.Name , local_slot , $"{order}{local_slot} = {v}")};" , s.Line);
                 else
-                    emit($"{local_slot} = $localSet({local_slot}, {Quote(local.Name)}, {v});" , s.Line);
+                    emit($"{bind_clear(cx , cx.Scope , local.Name , local_slot , $"{order}{local_slot} = $localSet({local_slot}, {Quote(local.Name)}, {v})")};" , s.Line);
                 set_status(cx , cx.Scope , local.Name , 'D');
                 return;
             }
@@ -699,10 +888,72 @@ sealed class Emitter
             case StatementKind.Empty:
                 return;
             case StatementKind.Return:
-                emit($"return {first_of(cx , s.Arguments)};" , s.Line);
+                //생성자의 return은 생성자를 끝내기만 함 (값은 계산하지만 무시)
+                if (cx.Fn.Self is string self)
+                    emit(s.Arguments.Count is 0 ? $"return {self};" : $"return ({first_of(cx , s.Arguments)}, {self});" , s.Line);
+                else
+                    emit($"return {first_of(cx , s.Arguments)};" , s.Line);
                 return;
         }
         throw new InvalidOperationException("알수없는 문장 " + s.Kind);
+    }
+
+    //─────────── 구조체 ───────────
+    readonly Stack<List<(string, int)>> pending_methods = new();
+    //함수/생성자에 들어올 때 인자로 받은 구조체 값을 복사 (인터프리터는 인자를 읽을때 복사하므로, 함수 안에서 원래 값이 바뀌어도 영향 없음)
+    string own_parameters(FunctionStatement function)
+        => has_structs ? string.Concat(Enumerable.Range(0 , function.ParameterCount).Select(i => $" $a{i} = own($a{i});")) : "";
+
+    //struct ~ endstruct: 구조체 이름에 생성자 함수를 넣음. 구조체 함수는 생성자 밖(정의마다 한번)에 만듦
+    void gen_struct(Cx cx , FunctionStatement structure)
+    {
+        int line = structure.Line;
+        if (structure.Name is null)
+        {
+            emit("$structSyntax();" , line);
+            return;
+        }
+        alias_guard(cx , structure.Name , line);
+        string ctor_slot = slot(cx.Scope , structure.Name);
+        set_status(cx , cx.Scope , structure.Name , 'D');
+        Scope inner = structure.InnerScope;
+        string self = self_of(inner);
+        State st = new();
+        foreach (var (scope , m) in cx.St)
+            st[scope] = m.ToDictionary(o => o.Key , o => o.Value is 'U' ? 'M' : o.Value);
+        st[inner] = fresh(inner , null);
+        Fn fn = new() { Self = self };
+        Cx fcx = new(inner , fn , st);
+        var parameters = Enumerable.Range(0 , structure.ParameterCount).Select(i => $"$a{i}");
+        string fname = mangle(structure.Name);
+        emit($"{ctor_slot} = (() => {{" , line);
+        int methods_at = output.Count;
+        pending_methods.Push(new());
+        emit($"return function $c_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , line);
+        emit($"if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(structure)}" , -2);
+        int temp_at = output.Count;
+        emit("" , line);
+        emit($"const {self} = new $T{inner.Id}({string.Join(", " , inner.NameOrder.Select(_ => "U").Prepend("[]"))});" , line);
+        gen_block(fcx , structure.Body);
+        emit($"return {self}; }} finally {{ $depth--; }} }};" , structure.EndLine);
+        if (fn.Temps > 0)
+            output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , line);
+        emit("})();" , structure.EndLine);
+        output.InsertRange(methods_at , pending_methods.Pop());
+    }
+    //구조체마다 JS 클래스 (필드 모양이 고정되어 V8이 빠르게 다룸)
+    IEnumerable<string> struct_classes()
+    {
+        foreach (FunctionStatement f in structs)
+        {
+            Scope inner = f.InnerScope;
+            string t = $"$T{inner.Id}";
+            var props = inner.NameOrder.Select(prop).ToList();
+            yield return $"class {t} extends JStruct {{ constructor({string.Join(", " , props.Prepend("o"))}) {{ super(); this.$o = o;{string.Concat(props.Select(p => $" this.{p} = {p};"))} }} }}";
+            yield return $"{t}.prototype.$name = {Quote(f.Name!)}; {t}.prototype.$line = {f.Line}; {t}.prototype.$jn = {{ {string.Join(", " , inner.NameOrder.Select(n => $"{prop(n)}: {Quote(n)}"))} }};";
+            yield return $"{t}.prototype.$copy = function (m) {{ return new {t}({string.Join(", " , props.Select(p => $"copyValue(this.{p}, m)").Prepend("this.$o"))}); }};";
+            yield return $"{t}.prototype.$same = function (b) {{ return sameOrder(this, b){string.Concat(props.Select(p => $" && fieldSame(this.{p}, b.{p})"))}; }};";
+        }
     }
 
     //─────────── 전체 ───────────
@@ -711,7 +962,7 @@ sealed class Emitter
         Block root = analysis.Root!;
         plan_gotos(analysis.TopGotos);
         foreach (FunctionStatement f in analysis.Functions)
-            plan_gotos(f.Gotos);
+            plan_gotos(f.Gotos , f.IsStruct ? $"return {self_of(f.InnerScope)};" : "return null;");
 
         Fn top_fn = new();
         State top_state = new() { [analysis.TopScope] = fresh(analysis.TopScope , null) };
@@ -735,6 +986,11 @@ sealed class Emitter
         };
         foreach (var r in host_refs.Values)
             head.Add($"const {r.Var} = $H.{r.What}({Quote(r.Name)});");
+        if (has_structs)
+        {
+            head.Add("const { JStruct, copyValue, own, equalS2 } = $R;");
+            head.Add("const { $structSyntax, $bm, $unbindIf, $aliasDefine } = $X;");
+        }
         for (int i = 0 ; i < consts.Count ; i++)
             head.Add($"const $k{i} = {consts[i]};");
         var body = head.Select(code => (code, -1)).Concat(output).ToList();
@@ -756,6 +1012,9 @@ sealed class Emitter
         write("var JyunoProgram = (function () {");
         write("\"use strict\";");
         write(NativeJsCompiler.RuntimeSource.TrimEnd('\n'));
+        //구조체 클래스는 실행(run)마다 새로 만들지 않도록 프로그램 함수 밖에 둠 (여러번 실행해도 V8의 인라인 캐시가 같은 모양을 봄)
+        foreach (string code in struct_classes())
+            write(code);
         int probe_line = line;
         write("const $probe = new Error();");
         write("return createProgram(function ($R, $X, $H) {");

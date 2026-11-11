@@ -19,6 +19,34 @@ class JList { constructor(e, fixed, a) { this.e = e; this.fixed = fixed; this.a 
 class JConst { constructor(v) { this.v = v; } }   // (상수) = (이름) 으로 만든 상수
 class Early { constructor(v) { this.v = v; } }     // 괄호 안의 식이 ')' 전에 끝남 (C#의 EarlyEnd)
 const EARLY_NULL = new Early(null);
+// 구조체 값 (Jyuno 1.5.0). 구조체마다 생성 코드가 이 클래스를 상속한 클래스를 만듦
+// - 필드/구조체 함수는 'f_' + 이름 속성 (아직 없다면 U), $o는 만들어진 순서의 속성 이름 (생성이 끝나면 바뀌지 않으므로 복사본과 공유)
+// - 프로토타입: $name(구조체 이름), $line(struct 줄, 같은 구조체인지 비교), $jn(속성 이름 → Jyuno 이름), $copy(m)(깊은 복사)
+class JStruct {
+  get typeName() { return this.$name; }
+  fieldProps() { const r = []; for (const p of this.$o) { const v = this[p]; if (v !== U && typeof v !== 'function') r.push(p); } return r; }
+  get fieldNames() { return this.fieldProps().map((p) => this.$jn[p]); }
+  field(name) { for (const p of this.fieldProps()) if (this.$jn[p] === name) { const v = this[p]; return v instanceof JConst ? v.v : v; } return undefined; }
+}
+// 깊은 복사에서 필드 값 하나 (리스트는 새로 만들고, 리스트 안의 구조체 값은 바뀌지 않으므로 공유)
+function copyValue(v, m) {
+  if (typeof v !== 'object' || v === null) return v;
+  if (v instanceof JStruct) return v.$copy(m);
+  if (v instanceof JList) {
+    const done = m.get(v);
+    if (done !== undefined) return done;
+    const c = new JList(v.e, v.fixed, v.a.slice());
+    m.set(v, c);
+    if (v.e === 'object') for (let i = 0; i < c.a.length; i++) { const x = c.a[i]; if (x instanceof JList) c.a[i] = copyValue(x, m); }
+    return c;
+  }
+  return v;
+}
+// 변수, 필드, 컬렉션에 넣을 때: 구조체 값이라면 복사본
+// 복사 한번 안에서 같은 리스트는 같은 복사본 (C#의 copied 사전). 복사는 사용자 코드를 실행하지 않으므로 사전 하나를 재사용
+const COPIED = new Map();
+function copyStruct(v) { const c = v.$copy(COPIED); if (COPIED.size !== 0) COPIED.clear(); return c; }
+const own = (v) => (v instanceof JStruct ? copyStruct(v) : v);
 
 // C#의 JyunoException 및 .NET 예외 (netType: 플레이그라운드에 보여줄 예외 타입 이름, JyunoException이면 null)
 class JyunoError extends Error {
@@ -99,7 +127,14 @@ function str(v) {
   if (v instanceof JDouble) return fmtDouble(v.v);
   if (typeof v === 'bigint') return v.toString();
   if (v instanceof JList) return listTypeName(v);
+  if (v instanceof JStruct) return structText(v);
   return String(v);
+}
+// StructValue.ToString: 'person { name = Jyunni, rating = 2424 }'
+function structText(v) {
+  const props = v.fieldProps();
+  if (props.length === 0) return `${v.$name} { }`;
+  return `${v.$name} { ${props.map((p) => { const x = v[p]; return `${v.$jn[p]} = ${show(x instanceof JConst ? x.v : x)}`; }).join(', ')} }`;
 }
 const show = (v) => (v === null ? 'null' : str(v)); // $"{v ?? "null"}"
 
@@ -112,6 +147,7 @@ function csType(v) {
   if (typeof v === 'string') return 'string';
   if (typeof v === 'boolean') return 'bool';
   if (v instanceof JList) return v.fixed ? `${ELEM_CS[v.e]}[]` : `System.Collections.Generic.List<${ELEM_CS[v.e]}>`;
+  if (v instanceof JStruct) return 'Jyuno.Language.StructValue';
   return 'object';
 }
 // .NET 런타임 타입 이름 (형변환 오류 메시지용)
@@ -205,7 +241,8 @@ function vmod(a, b) {
   throw binderError('%', a, b);
 }
 
-// Values.Same (equal)
+// Values.Same (equal). 구조체 값끼리 비교는 sameS (구조체가 없는 프로그램의 equal2는 이전과 같은 코드)
+const sameS = (a, b) => (a instanceof JStruct ? b instanceof JStruct && a.$line === b.$line && a.$same(b) : same(a, b));
 function same(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a === b;
   if (a === b) return a === a || typeof a !== 'number';
@@ -214,6 +251,33 @@ function same(a, b) {
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return ra === rb;
   return false; // object.Equals: 문자열/논리형은 위의 a === b, 컬렉션은 참조 비교
+}
+// StructInstance.Equals: 같은 struct 줄에서 만들었고(같은 클래스), 필드 이름(순서 포함)과 값이 모두 같음 (배열/리스트 필드는 원소끼리)
+// 클래스마다 생성 코드가 $same(b)를 만듦: sameOrder로 이름 순서를 비교한 뒤 필드마다 fieldSame
+function sameOrder(a, b) {
+  const oa = a.$o, ob = b.$o;
+  if (oa === ob) return true; // 복사본끼리는 순서 배열을 공유
+  if (oa.length === ob.length) {
+    let i = 0;
+    while (i < oa.length && oa[i] === ob[i]) i++;
+    if (i === oa.length) return true; // 만든 순서가 같음 (필드/함수 종류가 다르면 fieldSame이 false)
+  }
+  const pa = a.fieldProps(), pb = b.fieldProps();
+  if (pa.length !== pb.length) return false;
+  for (let i = 0; i < pa.length; i++) if (pa[i] !== pb[i]) return false;
+  return true;
+}
+function fieldSame(x, y) {
+  if (typeof x === 'function' && typeof y === 'function') return true; // 구조체 함수는 필드가 아님
+  if (x instanceof JConst) x = x.v;
+  if (y instanceof JConst) y = y.v;
+  if (x instanceof JList && y instanceof JList) {
+    if (x === y) return true;
+    if (x.a.length !== y.a.length) return false;
+    for (let i = 0; i < x.a.length; i++) if (!fieldSame(x.a[i], y.a[i])) return false;
+    return true;
+  }
+  return sameS(x, y);
 }
 
 // Values.Compare (less/greater): 음수/0/양수, NaN이 있으면 null
@@ -297,6 +361,12 @@ function sameKey(v) {
   return v; // 컬렉션은 참조
 }
 function colSub(first, remove) {
+  const all = remove instanceof JList ? remove.a : [remove];
+  if (all.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교
+    const items = [];
+    for (const x of first.a) if (!all.some((y) => sameS(x, y))) items.push(x);
+    return createLike(first, items);
+  }
   const set = new Set();
   const add = (x) => { const k = sameKey(x); if (k !== null) set.add(k); };
   if (remove instanceof JList) remove.a.forEach(add); else add(remove);
@@ -318,7 +388,7 @@ function listSet(list, index, value) {
   const i = indexOf(list, index);
   const f = fit(value, list.e);
   if (f === NOFIT) throw err(`'${show(value)}'은/는 이 컬렉션의 원소 타입(${ELEM_NAME[list.e]})에 넣을수 없습니다.`);
-  list.a[i] = f;
+  list.a[i] = own(f);
   return null;
 }
 // for 문의 순회 대상 (시작할 때 복사)
@@ -372,8 +442,8 @@ const builtins = {
   int(args) { if (args.length === 0) return 0; if (args.length === 1) { if (args[0] === null) throw nullError(); return toInteger(args[0]); } return null; },
   double(args) { if (args.length === 0) return new JDouble(0); if (args.length === 1) { if (args[0] === null) throw nullError(); return toReal(args[0]); } return null; },
   string(args) { if (args.length === 0) return ''; if (args[0] === null) throw nullError(); return str(args[0]); },
-  array(args) { return newArray(args.slice()); },
-  list(args) { return newList(args.slice()); },
+  array(args) { return newArray(args.map(own)); },
+  list(args) { return newList(args.map(own)); },
   length(args) {
     if (args.length === 0) throw err('길이를 구할 값이 필요합니다.');
     return length1(args[0]);
@@ -405,7 +475,7 @@ const builtins = {
   mod(args) { if (args.length < 2) throw err('모듈로 연산 할 값 2개가 필요합니다.'); return mod2(args[0], args[1]); },
   equal(args) {
     if (args.length < 2) throw err('비교할 대상이 최소 2개 이상 있어야 합니다.');
-    for (let i = 1; i < args.length; i++) if (!same(args[i - 1], args[i])) return false;
+    for (let i = 1; i < args.length; i++) if (!sameS(args[i - 1], args[i])) return false;
     return true;
   },
   less(args) { return ordered(args, 'less', -1); },
@@ -526,6 +596,7 @@ function mod2(a, b) {
   return vmod(a, b);
 }
 const equal2 = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : same(a, b));
+const equalS2 = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : sameS(a, b)); // 구조체가 있는 프로그램
 function less2(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a < b;
   const o = compare(a, b);
@@ -708,7 +779,7 @@ function colIndexOf(args, name) {
   const list = colTarget(args, name);
   if (args.length < 2) throw err(`${name}: 찾을 값이 필요합니다.`);
   const a = list.a;
-  for (let i = 0; i < a.length; i++) if (same(a[i], args[1])) return i;
+  for (let i = 0; i < a.length; i++) if (sameS(a[i], args[1])) return i;
   return -1;
 }
 function colRange(args, array, name) {
@@ -777,7 +848,7 @@ function addCollectionBuiltins() {
     f('new', (args, name) => {
       if (args.length === 0) throw err(`${name}: 길이가 필요합니다.`);
       const length = intArg(args[0], '길이', 0, MAX_LENGTH, name);
-      const items = new Array(length).fill(args.length > 1 ? args[1] : null);
+      const items = new Array(length).fill(args.length > 1 ? own(args[1]) : null);
       return array ? newArray(items) : newList(items);
     });
     // 1.4.2
@@ -786,18 +857,23 @@ function addCollectionBuiltins() {
       const list = colTarget(args, name);
       if (args.length < 2) throw err(`${name}: 찾을 값이 필요합니다.`);
       const a = list.a;
-      for (let i = a.length - 1; i >= 0; i--) if (same(a[i], args[1])) return i;
+      for (let i = a.length - 1; i >= 0; i--) if (sameS(a[i], args[1])) return i;
       return -1;
     });
     f('count', (args, name) => {
       const list = colTarget(args, name);
       if (args.length < 2) throw err(`${name}: 셀 값이 필요합니다.`);
       let n = 0;
-      for (const x of list.a) if (same(x, args[1])) n++;
+      for (const x of list.a) if (sameS(x, args[1])) n++;
       return n;
     });
     f('distinct', (args, name) => {
       const list = colTarget(args, name);
+      if (list.a.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교 (키를 만들수 없으므로 하나씩)
+        const items = [];
+        for (const x of list.a) if (!items.some((y) => sameS(y, x))) items.push(x); // NaN은 어떤 값과도 같지 않음
+        return createLike(list, items);
+      }
       const seen = new Set(), items = [];
       for (const x of list.a) {
         const k = sameKey(x);
@@ -820,7 +896,7 @@ function addCollectionBuiltins() {
     });
     f('fill', (args, name) => {
       const list = colTarget(args, name);
-      const v = fitOrThrow(list, args.length > 1 ? args[1] : null, name);
+      const v = own(fitOrThrow(list, args.length > 1 ? args[1] : null, name));
       list.a.fill(v);
       return list;
     });
@@ -850,7 +926,7 @@ function addCollectionBuiltins() {
     const list = colTarget(args, name);
     resizable(list, name);
     const values = [];
-    for (let i = 1; i < args.length; i++) values.push(fitOrThrow(list, args[i], name));
+    for (let i = 1; i < args.length; i++) values.push(own(fitOrThrow(list, args[i], name)));
     for (const v of values) list.a.push(v);
     return list;
   });
@@ -865,7 +941,7 @@ function addCollectionBuiltins() {
     resizable(list, name);
     if (args.length < 3) throw err(`${name}: 리스트, 인덱스, 값이 필요합니다.`);
     const at = intArg(args[1], '인덱스', 0, list.a.length, name);
-    list.a.splice(at, 0, fitOrThrow(list, args[2], name));
+    list.a.splice(at, 0, own(fitOrThrow(list, args[2], name)));
     return list;
   });
   l('removeat', (args, name) => {
@@ -1225,7 +1301,7 @@ function addMath(host) {
 }
 
 // ───────────── 생성 코드가 쓰는 도우미 ─────────────
-const R = { U, JDouble, JList, JConst, Early, EARLY_NULL, truthy, forItems, repeatCount, add2, sub2, mul2, div2, mod2, equal2, less2, greater2, and2, or2, not1, length1, add3, mul3 };
+const R = { U, JDouble, JList, JConst, Early, EARLY_NULL, JStruct, copyValue, own, equalS2, truthy, forItems, repeatCount, add2, sub2, mul2, div2, mod2, equal2, less2, greater2, and2, or2, not1, length1, add3, mul3 };
 
 function helpers(meta) {
   const E = (m, t = null) => new JyunoError(m, t);
@@ -1282,6 +1358,15 @@ function helpers(meta) {
       throw E(`Native JS 제약: goto로 ${n}번 줄로 이동할수 없습니다. (같은 블록이나 바깥 블록의 레이블/줄로만 이동할수 있습니다)`, 'NativeJsRestriction');
     },
     $tooDeep() { throw E('함수 호출이 너무 깊습니다. (최대 200번)'); },
+    $structSyntax() { throw E('struct 다음에는 구조체 이름 하나만 와야 합니다.'); },
+    // 구조체 함수를 이름이 정해지지 않은 자리에서 부를 때: 구조체 값을 this로 묶음
+    $bm(self, h) { return typeof h === 'function' ? h.bind(self) : h; },
+    // 구조체 값을 변수(prefix)에 넣으면 같은 영역에 직접 만든 'prefix.path' 이름은 덮어써져 사라짐
+    $unbindIf(s, path, cur) {
+      for (const p of path) { if (!(s instanceof JStruct)) return cur; s = s[p]; if (s === undefined || s === U) return cur; }
+      return U;
+    },
+    $aliasDefine(name) { throw E(`Native JS 제약: 구조체 값의 멤버 이름 '${name}'을/를 다시 정의할수 없습니다.`, 'NativeJsRestriction'); },
   };
   // 줄이 속한 함수 줄 (meta.functions: [시작 줄, endfunc 줄] 목록, 안쪽 함수가 뒤에 옴)
   function ownerOf(line) {
@@ -1355,7 +1440,9 @@ function createProgram(factory, meta) {
     const host = new Map();
     addConsole(host, io);
     addMath(host);
-    for (const [name, e] of Object.entries(options.host ?? {})) host.set(name, typeof e === 'function' ? { kind: 'func', fn: e } : e);
+    // 프로그램이 추가한 함수에는 구조체 값의 복사본을 넘김 (C#의 StructValue와 같음)
+    const ownArgs = (fn) => (args) => fn(args.map(own));
+    for (const [name, e] of Object.entries(options.host ?? {})) host.set(name, typeof e === 'function' ? { kind: 'func', fn: ownArgs(e) } : e && e.kind === 'func' ? { ...e, fn: ownArgs(e.fn) } : e);
     const main = factory(R, helpers(meta), hostApi(host));
     const limit = Error.stackTraceLimit;
     Error.stackTraceLimit = 200;
@@ -1406,6 +1493,6 @@ function createProgram(factory, meta) {
     return r;
   }
   // 호스트 함수를 만들때 쓰는 런타임 (값 표현과 오류)
-  const runtime = { JyunoError, JDouble, JList, D, str, describe, typeName, tryInt, tryReal, truthy, newArray, newList, nullError };
+  const runtime = { JyunoError, JDouble, JList, JStruct, D, str, describe, typeName, tryInt, tryReal, truthy, newArray, newList, nullError };
   return { run, main, runtime, name: meta.name, lineCount: meta.lineCount };
 }

@@ -17,9 +17,11 @@ public static class Keywords
         new("break" , KeywordType.Break , "break" , "가장 안쪽 반복문(while, repeat, for)을 빠져나옵니다."),
         new("goto" , KeywordType.Goto , "goto (값:정수|레이블)" , "(값)번째 줄(첫 줄은 0) 또는 레이블로 이동합니다. 함수 안팎으로는 이동할수 없습니다."),
         new("func" , KeywordType.Func , "func (함수명)\n\tparam (파라미터)\n\t...\nendfunc" , "함수를 만듭니다. 본문은 함수를 호출할 때 실행됩니다." , "func ${1:이름}\n\tparam ${2:인자}\n\t$0\nendfunc"),
-        new("param" , KeywordType.Param , "param (파라미터명)" , "함수 본문에서 쓴 순서대로 첫번째, 두번째, ... 인자를 받습니다. 인자가 부족하면 null입니다."),
+        new("param" , KeywordType.Param , "param (파라미터명)" , "함수(또는 구조체 생성자) 본문에서 쓴 순서대로 첫번째, 두번째, ... 인자를 받습니다. 인자가 부족하면 null입니다."),
         new("endfunc" , KeywordType.EndFunc , "endfunc" , "func 블록을 닫습니다. return 없이 여기에 도달하면 null을 반환합니다."),
         new("return" , KeywordType.Return , "return (값)" , "값을 반환합니다. 함수를 호출한 결과를 반환하려면 return (함수 인자...)처럼 괄호로 감싸세요."),
+        new("struct" , KeywordType.Struct , "struct (구조체명)\n\tparam (필드)\n\tfunc (구조체 함수)\n\t\t...\n\tendfunc\nendstruct" , "구조체를 만듭니다. 본문은 생성자이며, 구조체를 호출할 때 실행됩니다. 본문에서 만든 변수(param 포함)는 필드, 함수는 구조체 함수가 됩니다. 구조체 값을 변수에 넣으면 (변수명).(필드)와 (변수명).(구조체 함수) 이름이 선언되고, 대입/인자/반환할 때 깊은 복사됩니다." , "struct ${1:이름}\n\tparam ${2:필드}\n\t$0\nendstruct"),
+        new("endstruct" , KeywordType.EndStruct , "endstruct" , "struct 블록(생성자)을 닫습니다."),
         new("local" , KeywordType.Local , "local (변수명) = (값)" , "바깥에 같은 이름의 변수가 있더라도 지금 함수(또는 for 반복)에서만 쓰는 지역 변수를 만듭니다."),
     };
 
