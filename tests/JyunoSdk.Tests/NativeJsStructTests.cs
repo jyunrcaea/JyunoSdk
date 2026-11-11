@@ -862,7 +862,80 @@ b = pt 1
 console.writeline (length (list.distinct (list a b (pt 2) a)))
 console.writeline (length (sub (list a b (pt 2)) (pt 1)))
 console.writeline (list.remove (list a b) (pt 1))
-console.writeline (list.join (list a b) "","")")
+console.writeline (list.join (list a b) "","")"),
+        //다시 실행되는 param은 실행할 때마다 인자의 원래 값을 받음
+        P("param_in_loop" , @"
+struct pt
+  param x
+endstruct
+func f
+  i = 0
+  while (less i 3)
+    param q
+    console.writeline (string q)
+    q.x = add q.x 1
+    i = add i 1
+  end
+  return q
+endfunc
+v = pt 5
+console.writeline (string (f (pt 1)))
+console.writeline (string (f v))
+console.writeline (string v)
+func g
+  n = 0
+  again:
+  param p
+  console.writeline p.x
+  p.x = add p.x 10
+  n = add n 1
+  if (less n 3)
+    goto again
+  end
+  return p
+endfunc
+console.writeline (string (g v))
+struct acc
+  repeat 2
+    param s
+    s.x = add s.x 1
+    total = s.x
+  end
+endstruct
+console.writeline (string (acc v))
+console.writeline (string v)"),
+        //add로 리스트에 넣은 구조체 값은 복사본
+        P("add_list_struct" , @"
+struct pt
+  param x
+endstruct
+p = pt 1
+l = add (list) p
+p.x = 50
+console.writeline (string (l 0))
+l2 = add l (pt 3) p
+p.x = 60
+for e l2
+  console.writeline (string e)
+end"),
+        //구조체 필드의 필드에 대입해도 바깥 구조체 값에 숨은 값이 남지 않음 (비교 결과가 달라지지 않음)
+        P("member_assign_in_constructor" , @"
+struct bag
+  param a
+endstruct
+flag = true
+struct holder
+  inner = bag 0
+  if flag
+    inner.a = 5
+    inner.a = 0
+  end
+endstruct
+h1 = holder
+flag = false
+h2 = holder
+console.writeline (equal h1 h2)
+console.writeline (string h1)")
     };
 
     //오류는 마지막 줄에서 나도록 (MatchesInterpreter가 마지막 줄의 오류 메시지를 비교)

@@ -346,7 +346,7 @@ function colAdd(first, args, start) {
   const items = first.a.slice();
   for (let i = start; i < args.length; i++) {
     const v = args[i];
-    if (v instanceof JList) { for (const x of v.a) items.push(x); } else items.push(v);
+    if (v instanceof JList) { for (const x of v.a) items.push(x); } else items.push(own(v)); // 구조체 값은 복사본을 담음
   }
   return createLike(first, items);
 }
