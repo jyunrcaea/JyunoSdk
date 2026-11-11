@@ -58,6 +58,7 @@ jyuno --version                버전을 출력합니다.
   --file, -file                파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
   --commands <묶음,...>        사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
+  --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
 ```
 

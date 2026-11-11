@@ -27,6 +27,7 @@ public static class Program
   --file, -file                  파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
   --commands <묶음,...>          사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름
+  --optimize, -O                 (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)";
 
     public static int Main(string[] args)
@@ -76,7 +77,7 @@ public static class Program
         public UsageException(string message) : base(message) { }
     }
 
-    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput);
+    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput , bool Optimize);
 
     static Arguments Parse(string[] args , CommandGroups commands)
     {
@@ -86,6 +87,7 @@ public static class Program
         int? spaces = null;
         bool native_js = false;
         string? native_js_output = null;
+        bool optimize = false;
         for (int i = 0 ; i < args.Length ; i++)
         {
             string arg = args[i];
@@ -122,6 +124,9 @@ public static class Program
                     if (i + 1 < args.Length && !args[i + 1].StartsWith('-') && (is_js(args[i + 1]) || files.Count > 0))
                         native_js_output = args[++i];
                     break;
+                case "--optimize" or "-o":
+                    optimize = true;
+                    break;
                 case "--write" or "-w":
                     write = true;
                     break;
@@ -135,7 +140,7 @@ public static class Program
                     break;
             }
         }
-        return new(files , commands , hosts , write , spaces , native_js , native_js_output);
+        return new(files , commands , hosts , write , spaces , native_js , native_js_output , optimize);
     }
 
     static bool is_js(string path) => Path.GetExtension(path).ToLowerInvariant() is ".js" or ".mjs" or ".cjs";
@@ -157,6 +162,9 @@ public static class Program
         if (parsed.NativeJs)
             return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands);
         using Interpreter interpreter = runtime.Create(File.ReadAllLines(path));
+        //실험적 최적화 (Jyuno 1.5.2부터, 기본값은 꺼짐): 결과는 같고 구조체 복사와 작은 함수 호출이 빨라짐
+        interpreter.EscapeAnalysis = parsed.Optimize;
+        interpreter.Inlining = parsed.Optimize;
         try
         {
             object? result = interpreter.Run();

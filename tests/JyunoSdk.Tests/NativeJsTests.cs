@@ -98,6 +98,63 @@ public class NativeJsTests
         }
     }
 
+    //--optimize(-O)로 실험적 최적화(탈출 분석, 인라이닝)를 켜도 결과가 같아야 함 (Jyuno 1.5.2부터)
+    [Fact]
+    public void CliOptimizeKeepsOutput()
+    {
+        string dir = Path.Combine(Path.GetTempPath() , "jyuno-cli-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string script = Path.Combine(dir , "vec.jyuno");
+            File.WriteAllLines(script , Script.Lines(@"
+struct vec
+    param x
+    param y
+    func plus
+        param o
+        return (vec (add x o.x) (add y o.y))
+    endfunc
+endstruct
+func twice
+    param v
+    return (v.plus v)
+endfunc
+v = vec 0 0
+w = vec 1 2
+repeat 10
+    v = v.plus w
+end
+u = twice v
+console.writeline (add u.x u.y)
+console.writeline v.x
+"));
+            string run(params string[] options)
+            {
+                TextWriter output = Console.Out;
+                StringWriter writer = new();
+                Console.SetOut(writer);
+                try
+                {
+                    Assert.Equal(0 , Cli.Program.Main(new[] { script }.Concat(options).ToArray()));
+                }
+                finally
+                {
+                    Console.SetOut(output);
+                }
+                return writer.ToString();
+            }
+            string expected = run();
+            Assert.Contains("60" , expected);
+            Assert.Equal(expected , run("-O"));
+            Assert.Equal(expected , run("--optimize"));
+        }
+        finally
+        {
+            Directory.Delete(dir , true);
+        }
+    }
+
     static int Quiet(Func<int> action)
     {
         TextWriter output = Console.Out, error = Console.Error;

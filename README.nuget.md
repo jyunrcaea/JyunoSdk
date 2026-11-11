@@ -59,6 +59,7 @@ Options:
   --file, -file                Allow commands that work with files/directories (file.*, directory.*).
   --commands <group,...>       Command groups to use (console, math, file, default, all)
   --host <name,...>            (check) Names of functions/variables provided separately by the program
+  --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
   --native-js [output file]    Translate to Native JS and save. (Run it with node <output file>.js)
 ```
 
