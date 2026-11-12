@@ -203,7 +203,13 @@ sealed class Emitter
             return m;
         }
     }
-    sealed class Fn { public int Temps; public string? Self; }
+    sealed class Fn
+    {
+        public int Temps;
+        public string? Self;
+        //지금 만들고 있는 코드를 감싼 반복문의 수 (다시 실행될수 있는 param을 구별)
+        public int Loops;
+    }
     sealed class Cx
     {
         public Cx(Scope scope , Fn fn , State state) { Scope = scope; Fn = fn; St = state; }
@@ -314,7 +320,8 @@ sealed class Emitter
         for (int i = parts.Count - 1 ; i >= 0 ; i--)
         {
             Part p = parts[i];
-            code = code is null ? set(p) : $"({test(p)} ? {set(p)} : {code})";
+            //뒤쪽 코드는 쉼표로 이어진 식일수 있으므로 괄호로 묶음 (묶지 않으면 조건과 관계없이 실행됨)
+            code = code is null ? set(p) : $"({test(p)} ? {set(p)} : ({code}))";
         }
         if (!definite)
         {
@@ -737,7 +744,9 @@ sealed class Emitter
                     emit($"{{ let {n} = {count}; {label}: for (; {n} > 0; {n}--) {{" , s.Line);
                 }
                 State after_head = cx.St.Clone();
+                cx.Fn.Loops++;
                 gen_block(cx , loop.Body);
+                cx.Fn.Loops--;
                 if (loop.EndTokenError is string end_error)
                     emit(grammar(loop.EndLine , end_error) , loop.EndLine);
                 emit(loop.Kind is StatementKind.While ? "}" : "} }" , loop.EndLine);
@@ -762,7 +771,9 @@ sealed class Emitter
                 string item = has_structs ? $"own({it}[{i}])" : $"{it}[{i}]";
                 var declarations = inner.NameOrder.Select(n => n == each.VariableName ? $"{slot(inner , n)} = {item}" : $"{slot(inner , n)} = U");
                 emit($"{{ const {it} = forItems({source}); {label}: for (let {i} = 0; {i} < {it}.length; {i}++) {{ let {string.Join(", " , declarations)};" , s.Line);
+                cx.Fn.Loops++;
                 gen_block(icx , each.Body);
+                cx.Fn.Loops--;
                 if (each.EndTokenError is string end_error)
                     emit(grammar(each.EndLine , end_error) , each.EndLine);
                 emit("} }" , each.EndLine);
@@ -849,7 +860,10 @@ sealed class Emitter
                     return;
                 }
                 alias_guard(cx , p.Name , s.Line);
-                emit($"{order_push(cx , cx.Scope , p.Name)}{slot(cx.Scope , p.Name)} = ($a{p.ParameterIndex} === undefined ? null : $a{p.ParameterIndex});" , s.Line);
+                //다시 실행될수 있는 param(반복문 안, goto가 있는 함수)은 실행할 때마다 인자의 원래 값을 받아야 하므로 복사본을 넣음
+                string argument = $"$a{p.ParameterIndex}";
+                bool repeats = has_structs && (cx.Fn.Loops > 0 || !trackable(cx.Scope));
+                emit($"{order_push(cx , cx.Scope , p.Name)}{slot(cx.Scope , p.Name)} = ({argument} === undefined ? null : {(repeats ? $"own({argument})" : argument)});" , s.Line);
                 set_status(cx , cx.Scope , p.Name , 'D');
                 return;
             case LocalStatement local:
