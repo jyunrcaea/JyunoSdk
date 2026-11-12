@@ -29,7 +29,7 @@
       dotnet build -p:JyunoSource=../Jyuno/Jyuno.csproj
   -->
   <PropertyGroup>
-    <JyunoVersion>1.5.2</JyunoVersion>
+    <JyunoVersion>1.5.3</JyunoVersion>
     <JyunoSource></JyunoSource>
     <!-- 상대 경로는 이 파일(저장소 최상위) 기준 -->
     <JyunoSourcePath Condition="'$(JyunoSource)' != ''">$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('$(MSBuildThisFileDirectory)', '$(JyunoSource)'))))</JyunoSourcePath>
