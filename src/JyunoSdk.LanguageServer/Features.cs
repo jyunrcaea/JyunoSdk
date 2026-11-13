@@ -212,6 +212,7 @@ public sealed partial class JyunoLanguageServer
                 string s => $"*문자열 (string) · {s.Length}글자*",
                 _ => null
             },
+            TokenType.Operator => Operators.Describe((string)token.Value),
             _ => null
         };
         if (content is null)
@@ -482,6 +483,7 @@ public sealed partial class JyunoLanguageServer
                         yield return (line.Index , token.Start , token.Length , token.Value is string ? String : Number , 0);
                         break;
                     case TokenType.Prefix:
+                    case TokenType.Operator:
                         yield return (line.Index , token.Start , token.Length , Operator , 0);
                         break;
                     case TokenType.Name:

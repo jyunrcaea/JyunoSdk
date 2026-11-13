@@ -1,6 +1,6 @@
 # Native JS 사용하기
 
-이 페이지는 JyunoSdk **0.4.1** (Jyuno **1.5.3**) 기준입니다. Native JS가 무엇인지는 [[소개|Native-JS]]를 먼저 보세요.
+이 페이지는 JyunoSdk **0.5.0** (Jyuno **1.6.1**) 기준입니다. Native JS가 무엇인지는 [[소개|Native-JS]]를 먼저 보세요.
 
 ## 1. 명령어로 변환하기
 
@@ -32,7 +32,7 @@ bad.jyuno:10: 오류: Native JS 제약: goto로 블록(if, while, repeat, for) �
 만들어진 파일은 한 개의 독립된 스크립트입니다.
 
 ```js
-// hello.jyuno → Jyuno Native JS (JyunoSdk 0.4.1, Jyuno 1.5.3)
+// hello.jyuno → Jyuno Native JS (JyunoSdk 0.5.0, Jyuno 1.6.1)
 // Node.js: node <이 파일>.js  ·  브라우저/모듈: JyunoProgram.run({ input, write, host })
 var JyunoProgram = (function () {
   // ① Jyuno 런타임 (값 표현, 연산, 내장 명령어, 오류 메시지)

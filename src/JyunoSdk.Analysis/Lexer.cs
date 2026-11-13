@@ -9,7 +9,7 @@ namespace JyunoSdk.Analysis;
 /// 위치 정보가 있는 토큰. <see cref="TokenType"/>과 <see cref="Value"/>는 Jyuno의 <see cref="Parser.Tokenizer"/>와 같습니다.
 /// </summary>
 /// <param name="Type">토큰 종류 (Jyuno와 같음)</param>
-/// <param name="Value">토큰 값 (Jyuno와 같음: 상수는 long/double/string, 연산자는 char, 키워드는 KeywordType, 이름은 string, 오류는 메시지)</param>
+/// <param name="Value">토큰 값 (Jyuno와 같음: 상수는 long/double/string, 기호(: = ( ) 등)는 char, 연산자(+, == 등)는 string, 키워드는 KeywordType, 이름은 string, 오류는 메시지)</param>
 /// <param name="Start">줄 안에서 토큰이 시작하는 위치 (UTF-16 단위)</param>
 /// <param name="End">줄 안에서 토큰이 끝나는 위치 (포함하지 않음)</param>
 public sealed record SourceToken(TokenType Type , object Value , int Start , int End)
@@ -17,6 +17,9 @@ public sealed record SourceToken(TokenType Type , object Value , int Start , int
     public int Length => End - Start;
     public bool IsPrefix(char prefix) => Type is TokenType.Prefix && Value is char c && c == prefix;
     public bool IsKeyword(KeywordType keyword) => Type is TokenType.Keyword && Value is KeywordType k && k == keyword;
+    /// <summary>연산자 토큰인지 (Jyuno 1.6.0부터, symbol이 null이면 모든 연산자)</summary>
+    public bool IsOperator(string? symbol = null) => Type is TokenType.Operator && (symbol is null || (string)Value == symbol);
+    public string? Operator => Type is TokenType.Operator ? (string)Value : null;
     public string? Name => Type is TokenType.Name ? (string)Value : null;
     public bool Contains(int column) => Start <= column && column < End;
     /// <summary>커서가 토큰 안 또는 바로 뒤에 있는지</summary>
@@ -45,8 +48,8 @@ public static class Lexer
             //줄 중간에서는 ' '만 공백으로 취급함 (탭은 이름의 일부가 됨)
             if (start is ' ')
                 continue;
-            //숫자 (숫자 바로 앞에 붙은 '-'는 음수 부호)
-            if (IsDigit(start) || (start is '-' && index + 1 < finish && IsDigit(line[index + 1])))
+            //숫자 (숫자 바로 앞에 붙은 '-'는 음수 부호, 단 'a-1'처럼 값 바로 뒤에 붙은 '-'는 뺄셈 연산자)
+            if (IsDigit(start) || (start is '-' && index + 1 < finish && IsDigit(line[index + 1]) && !AfterValue(line , begin , index)))
             {
                 int from = index;
                 while (++index < finish && IsDigit(line[index])) { }
@@ -71,7 +74,29 @@ public static class Lexer
                 tokens.Add(new(TokenType.Constant , num , from , to));
                 continue;
             }
-            //연산자
+            //주석: '//'부터 줄 끝까지 무시 (Jyuno 1.6.0부터)
+            if (start is '/' && index + 1 < finish && line[index + 1] is '/')
+                break;
+            //연산자 (긴 기호부터, '='만 있다면 대입/삭제 기호, Jyuno 1.6.0부터)
+            if (Grammar.OperatorChars.Contains(start))
+            {
+                string? symbol = null;
+                foreach (string op in Grammar.Operators)
+                {
+                    if (index + op.Length <= finish && string.CompareOrdinal(line , index , op , 0 , op.Length) == 0)
+                    {
+                        symbol = op;
+                        break;
+                    }
+                }
+                if (symbol is not null)
+                {
+                    tokens.Add(new(TokenType.Operator , symbol , index , index + symbol.Length));
+                    index += symbol.Length - 1;
+                    continue;
+                }
+            }
+            //기호
             if (Grammar.Prefixes.Contains(start))
             {
                 tokens.Add(new(TokenType.Prefix , start , index , index + 1));
@@ -108,7 +133,7 @@ public static class Lexer
             //이름 또는 키워드
             {
                 int from = index;
-                while (index < finish && !Grammar.Prefixes.Contains(line[index]) && line[index] is not (' ' or '"' or '\''))
+                while (index < finish && !Grammar.Prefixes.Contains(line[index]) && !Grammar.OperatorChars.Contains(line[index]) && line[index] is not (' ' or '"' or '\''))
                     index++;
                 string name = line[from..index];
                 int to = index;
@@ -124,8 +149,19 @@ public static class Lexer
 
     static bool IsDigit(char c) => c is >= '0' and <= '9';
 
+    //index 위치의 글자가 값(이름, 숫자, 문자열, ')') 바로 뒤에 붙어 있는지 ('a-1', '(x)-1'의 '-'는 뺄셈, Jyuno의 Parser.after_value)
+    static bool AfterValue(string line , int begin , int index)
+    {
+        if (index == begin)
+            return false;
+        char before = line[index - 1];
+        if (before is ')')
+            return true;
+        return before is not ' ' && !Grammar.Prefixes.Contains(before) && !Grammar.OperatorChars.Contains(before);
+    }
+
     /// <summary>이름에 쓸수 있는 글자인지 (자동 완성에서 커서 앞의 단어를 찾을 때 사용)</summary>
-    public static bool IsNameChar(char c) => !Grammar.Prefixes.Contains(c) && c is not (' ' or '"' or '\'') && !char.IsWhiteSpace(c);
+    public static bool IsNameChar(char c) => !Grammar.Prefixes.Contains(c) && !Grammar.OperatorChars.Contains(c) && c is not (' ' or '"' or '\'') && !char.IsWhiteSpace(c);
 
     /// <summary>새 이름으로 쓸수 있는지 (이름 바꾸기에서 사용)</summary>
     public static bool IsValidName(string name)

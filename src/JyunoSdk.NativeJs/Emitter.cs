@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Jyuno.Analysis;
+using Jyuno.Language;
 
 namespace JyunoSdk.NativeJs;
 
@@ -9,6 +10,8 @@ namespace JyunoSdk.NativeJs;
 //- 확정 분석: 어느 지점에서 칸이 반드시 있는지(D)/반드시 없는지(U)/모르는지(M)를 추적해서 대부분의 검사를 없앰
 //- 내장 함수는 다시 정의할수 없으므로(Native JS 제약) 호출을 인자 개수에 맞는 빠른 함수로 바꿈
 //- goto: 대상이 있는 블록을 "for(;;) { switch(pc) { case ... } }" 디스패치 루프로 만들어 continue로 이동
+//- 연산자 (Jyuno 1.6.0): 런타임의 함수(add2, opLt 등)로 바꾸고, &&, ||, ??, ?:는 JS의 같은 연산자로 단락 평가
+//  구조체가 다시 정의한 연산자(func +)는 구조체 함수처럼 구조체 값의 속성 (f_ + 기호를 바꾼 이름)
 sealed class Emitter
 {
     readonly ScriptAnalysis analysis;
@@ -29,7 +32,27 @@ sealed class Emitter
             foreach (var (name , kinds) in f.InnerScope.Names)
                 member_kinds[name] = member_kinds.TryGetValue(name , out NameKinds k) ? k | kinds : kinds;
         }
+        //구조체가 다시 정의한 연산자 (Jyuno 1.6.0): 구조체 생성자에서 'func +' 등으로 정의한 것만 연산자로 쓰임
+        foreach (FunctionStatement f in analysis.Functions)
+        {
+            if (f.IsStruct || f.Operator is not string symbol || f.TokenError is not null || !Grammar.IsOverloadable(symbol))
+                continue;
+            if (f.InnerScope.Parent is not { Kind: ScopeKind.Struct } owner)
+                continue;
+            if (!operators.TryGetValue(owner , out var symbols))
+                operators[owner] = symbols = new();
+            if (!symbols.Contains(symbol))
+                symbols.Add(symbol);
+            defined_operators.Add(symbol);
+        }
     }
+    //구조체 영역 → 그 구조체가 다시 정의한 연산자 기호들, 어느 구조체든 다시 정의한 연산자 기호
+    readonly Dictionary<Scope , List<string>> operators = new();
+    readonly HashSet<string> defined_operators = new();
+    bool has_operators => defined_operators.Count > 0;
+    //연산자 식을 썼는지 (머리말에 런타임 함수를 가져옴)
+    bool uses_operators;
+    IEnumerable<string> operator_props(Scope inner) => operators.TryGetValue(inner , out var symbols) ? symbols.Select(prop) : Enumerable.Empty<string>();
     //struct 문장들과, 구조체 영역에 만들어질수 있는 이름(멤버) → 종류 (모든 구조체를 합침)
     readonly List<FunctionStatement> structs = new();
     readonly Dictionary<string , NameKinds> member_kinds = new();
@@ -379,23 +402,30 @@ sealed class Emitter
     //변수/필드/컬렉션에 넣는 값: 구조체 값이라면 복사본 (구조체 값이 될수 없는 식은 그대로)
     string own(Expression e , string code) => has_structs && may_struct(e) ? $"own({code})" : code;
     static readonly HashSet<string> ElementResults = new() { "list.pop" , "list.removeat" , "array.min" , "array.max" , "list.min" , "list.max" };
+    static readonly HashSet<string> OperatorResults = new() { "add" , "sub" , "mul" , "div" , "mod" , "and" , "or" , "not" };
     bool may_struct(Expression e)
     {
         switch (e)
         {
             case ConstantExpression: return false;
             case ParenthesisExpression p: return may_struct(p.Inner);
-            //내장 함수는 원소를 꺼내는 함수만 구조체 값을 돌려줄수 있음
-            case CallExpression call when glob(call.Name , out _) is G.Builtin: return ElementResults.Contains(call.Name);
+            //내장 함수는 원소를 꺼내는 함수만 구조체 값을 돌려줄수 있음 (다시 정의한 연산자로 계산하는 add 등은 그 결과)
+            case CallExpression call when glob(call.Name , out _) is G.Builtin: return ElementResults.Contains(call.Name) || (has_operators && OperatorResults.Contains(call.Name));
+            //&&, ||는 항상 bool
+            case BinaryExpression { Operator: "&&" or "||" }: return false;
             default: return true;
         }
     }
     //사용자 코드를 실행할수 있는 식 (구조체 값을 바꿀수 있음): 대입, 내장 함수가 아닌 호출
+    //구조체가 연산자를 다시 정의했다면 연산자와 내장 함수도 구조체 함수를 실행할수 있음
     bool effects(Expression e) => e switch {
-        AssignExpression => true ,
-        CallExpression call => glob(call.Name , out _) is not (G.Builtin or G.Func) || call.Arguments.Any(effects) ,
+        AssignExpression or CompoundAssignExpression => true ,
+        CallExpression call => glob(call.Name , out _) switch { G.Func => false , G.Builtin => has_operators , _ => true } || call.Arguments.Any(effects) ,
         ParenthesisExpression p => effects(p.Inner) ,
         UnclosedParenthesisExpression u => effects(u.Inner) ,
+        BinaryExpression b => (has_operators && !b.IsShortCircuit) || effects(b.Left) || effects(b.Right) ,
+        UnaryExpression u => has_operators || effects(u.Operand) ,
+        ConditionalExpression c => effects(c.Condition) || effects(c.WhenTrue) || effects(c.WhenFalse) ,
         _ => false
     };
 
@@ -435,28 +465,154 @@ sealed class Emitter
                 if (options.BlockSubstitute)
                     return new("$noSubstitute()");
                 Code rhs = gen(cx , a.Value);
-                string t = temp(cx);
                 if (rhs.Early)
                 {
+                    string t = temp(cx);
                     string a1 = assign_code(cx , a.Name , own(a.Value , $"{t}.v"));
                     string a2 = assign_code(cx , a.Name , own(a.Value , t));
                     return new($"(({t} = {rhs.Text}) instanceof Early ? ({a1}, EARLY_NULL) : ({a2}, null))" , Early: true);
                 }
-                string value = own(a.Value , rhs.Text);
-                var (parts , definite) = chain(cx , a.Name);
-                if (definite && parts.Count is 1 && only_var(parts[0].Kinds))
-                {
-                    string direct = bind_clear(cx , parts[0].Scope , a.Name , parts[0].Slot , $"{parts[0].Slot} = {value}");
-                    return new($"({direct}, null)" , Statement: direct);
-                }
-                string assign = assign_code(cx , a.Name , t);
-                return new($"({t} = {value}, {assign}, null)");
+                return assign_value(cx , a.Name , own(a.Value , rhs.Text));
             }
-            case CallExpression call: return gen_call(cx , call);
+            //x += e: x = x + e (x를 먼저 읽음, 대입 금지는 계산하기 전에 확인)
+            case CompoundAssignExpression c:
+            {
+                if (options.BlockSubstitute)
+                    return new("$noSubstitute()");
+                string current = gen_call(cx , new Call(c.Name , Array.Empty<Expression>() , false , false)).Text;
+                string value;
+                //x ??= e: x = x ?? e (x가 null일 때만 e를 계산)
+                if (c.Operator is "??")
+                {
+                    uses_operators = true;
+                    Code fallback = conditional(cx , () => gen(cx , c.Value));
+                    value = $"({current} ?? {fallback.Text})";
+                }
+                else
+                {
+                    Code rhs = gen(cx , c.Value);
+                    if (has_structs && effects(c.Value))
+                        current = $"own({current})";
+                    value = binary_code(c.Operator , current , rhs.Text).Text;
+                }
+                return assign_value(cx , c.Name , has_structs ? $"own({value})" : value);
+            }
+            case BinaryExpression b: return gen_binary(cx , b);
+            case UnaryExpression u: return gen_unary(cx , u);
+            case ConditionalExpression c:
+            {
+                uses_operators = true;
+                string test = truthy(gen(cx , c.Condition));
+                State before = cx.St.Clone();
+                Code when_true = gen(cx , c.WhenTrue);
+                State after_true = cx.St;
+                cx.St = before;
+                Code when_false = gen(cx , c.WhenFalse);
+                cx.St = State.Join(after_true , cx.St);
+                return new($"({test} ? {when_true.Text} : {when_false.Text})" , Bool: when_true.Bool && when_false.Bool);
+            }
+            case SyntaxErrorExpression error:
+                uses_operators = true;
+                return new($"$fail({Quote(error.Message)})");
+            case CallExpression call: return gen_call(cx , new Call(call.Name , call.Arguments , call.HasArguments , call.Closed , call.IsKeywordArgument));
             //삭제는 Native JS 제약으로 미리 걸러짐
             case RemoveExpression: throw new InvalidOperationException("삭제 연산은 Native JS로 바꿀수 없습니다.");
         }
         throw new InvalidOperationException("알수없는 식 " + e.GetType().Name);
+    }
+
+    //이름에 값을 넣는 식 (value는 이미 복사한 값)
+    Code assign_value(Cx cx , string name , string value)
+    {
+        var (parts , definite) = chain(cx , name);
+        if (definite && parts.Count is 1 && only_var(parts[0].Kinds))
+        {
+            string direct = bind_clear(cx , parts[0].Scope , name , parts[0].Slot , $"{parts[0].Slot} = {value}");
+            return new($"({direct}, null)" , Statement: direct);
+        }
+        string t = temp(cx);
+        string assign = assign_code(cx , name , t);
+        return new($"({t} = {value}, {assign}, null)");
+    }
+
+    static string truthy(Code c) => c.Bool ? c.Text : $"truthy({c.Text})";
+
+    //─────────── 연산자 (Jyuno 1.6.0) ───────────
+    //이항 연산자: +, -, *, /, %, &, |는 같은 계산을 하는 내장 함수의 빠른 경로, 나머지는 런타임의 연산자 함수
+    //다시 정의한 비교 연산자의 결과는 bool로 바꾸지 않으므로, 그 연산자를 다시 정의한 구조체가 있다면 결과가 bool이라고 가정하지 않음
+    Code binary_code(string symbol , string left , string right)
+    {
+        uses_operators = true;
+        bool comparison = !defined_operators.Contains(symbol);
+        return symbol switch {
+            "+" => new($"add2({left}, {right})"),
+            "-" => new($"sub2({left}, {right})"),
+            "*" => new($"mul2({left}, {right})"),
+            "/" => new($"div2({left}, {right})"),
+            "%" => new($"mod2({left}, {right})"),
+            "&" => new($"and2({left}, {right})"),
+            "|" => new($"or2({left}, {right})"),
+            "^" => new($"opXor({left}, {right})"),
+            "<<" => new($"opShl({left}, {right})"),
+            ">>" => new($"opShr({left}, {right})"),
+            "==" => new(has_structs ? $"opEq({left}, {right})" : $"equal2({left}, {right})" , Bool: comparison),
+            "!=" => new($"opNe({left}, {right})" , Bool: comparison),
+            "<" => new(has_structs ? $"opLt({left}, {right})" : $"less2({left}, {right})" , Bool: comparison),
+            ">" => new(has_structs ? $"opGt({left}, {right})" : $"greater2({left}, {right})" , Bool: comparison),
+            "<=" => new($"opLe({left}, {right})" , Bool: comparison),
+            ">=" => new($"opGe({left}, {right})" , Bool: comparison),
+            _ => throw new InvalidOperationException("알수없는 연산자 " + symbol)
+        };
+    }
+
+    Code gen_binary(Cx cx , BinaryExpression b)
+    {
+        uses_operators = true;
+        Code left = gen(cx , b.Left);
+        switch (b.Operator)
+        {
+            //단락 평가: 오른쪽은 필요할 때만 계산
+            case "&&":
+            {
+                Code right = conditional(cx , () => gen(cx , b.Right));
+                return new($"({truthy(left)} && {truthy(right)})" , Bool: true);
+            }
+            case "||":
+            {
+                Code right = conditional(cx , () => gen(cx , b.Right));
+                return new($"({truthy(left)} || {truthy(right)})" , Bool: true);
+            }
+            case "??":
+            {
+                Code right = conditional(cx , () => gen(cx , b.Right));
+                return new($"({left.Text} ?? {right.Text})" , Bool: left.Bool && right.Bool);
+            }
+        }
+        Code r = gen(cx , b.Right);
+        string l = left.Text;
+        //왼쪽 값이 변수의 구조체 값을 가리키는데 오른쪽 식이 그 값을 바꿀수 있다면 미리 복사 (인터프리터는 읽을때 복사)
+        if (has_structs && may_struct(b.Left) && effects(b.Right))
+            l = $"own({l})";
+        return binary_code(b.Operator , l , r.Text);
+    }
+
+    Code gen_unary(Cx cx , UnaryExpression u)
+    {
+        uses_operators = true;
+        //음수 상수는 미리 계산 (- 5)
+        if (u.Operator is "-" && u.Operand is ConstantExpression { Value: long or double } constant)
+        {
+            object negated = constant.Value is long l ? (object)unchecked(-l) : (object)(-(double)constant.Value!);
+            return new(literal(negated));
+        }
+        Code operand = gen(cx , u.Operand);
+        return u.Operator switch {
+            "-" => new($"opNeg({operand.Text})"),
+            "+" => new($"opPlus({operand.Text})"),
+            "!" => new($"opNot({operand.Text})" , Bool: !defined_operators.Contains("!")),
+            "~" => new($"opCom({operand.Text})"),
+            _ => throw new InvalidOperationException("알수없는 연산자 " + u.Operator)
+        };
     }
 
     List<string> gen_args(Cx cx , IReadOnlyList<Expression> args)
@@ -479,8 +635,15 @@ sealed class Emitter
         return r;
     }
 
+    //함수 호출 자리 (CallExpression, 또는 복합 대입에서 이름 읽기)
+    //KeywordArgument: 키워드(if, return 등) 인자 자리에 괄호 없이 쓴 이름 (인자 없이 쓴 이름이 없을 때의 오류 메시지가 다름, Jyuno 1.6.0)
+    sealed record Call(string Name , IReadOnlyList<Expression> Arguments , bool HasArguments , bool Closed , bool KeywordArgument = false)
+    {
+        public string Missing => KeywordArgument && !HasArguments ? $"$unknownVar({Quote(Name)})" : $"$unknownCall({Quote(Name)})";
+    }
+
     //변수 값에 대한 호출: 인자가 있으면 배열/리스트의 원소 읽기/쓰기
-    Code variable_call(Cx cx , CallExpression e , string value)
+    Code variable_call(Cx cx , Call e , string value)
     {
         if (!e.HasArguments)
             return new(value);
@@ -498,7 +661,7 @@ sealed class Emitter
         return new($"(({t} = {value}) instanceof JList ? {list_part} : {other})" , Early: e.Closed);
     }
 
-    Code gen_call(Cx cx , CallExpression e)
+    Code gen_call(Cx cx , Call e)
     {
         var (parts , definite) = chain(cx , e.Name);
         object? value = null;
@@ -524,7 +687,7 @@ sealed class Emitter
                 case G.Func: return new($"{host_ref(e.Name , "fn")}([{string.Join(", " , gen_args(cx , e.Arguments))}])");
                 case G.Var: return variable_call(cx , e , $"{host_ref(e.Name , "var")}.get()");
                 case G.Const: return variable_call(cx , e , literal(value));
-                default: return new($"$unknownCall({Quote(e.Name)})");
+                default: return new(e.Missing);
             }
         }
         //이름이 함수인지 변수인지 실행할때 정해지는 경우
@@ -548,7 +711,7 @@ sealed class Emitter
                     fallback = host_ref(e.Name , "holder");
                     break;
                 default:
-                    fallback = $"$unknownCall({Quote(e.Name)})";
+                    fallback = e.Missing;
                     break;
             }
         }
@@ -784,17 +947,45 @@ sealed class Emitter
                 return;
             case FunctionStatement function:
             {
-                if (function.Name is null)
+                string function_slot, order, fname;
+                if (function.Name is not null)
+                {
+                    alias_guard(cx , function.Name , s.Line);
+                    function_slot = slot(cx.Scope , function.Name);
+                    order = order_push(cx , cx.Scope , function.Name);
+                    set_status(cx , cx.Scope , function.Name , 'D');
+                    fname = mangle(function.Name);
+                }
+                else if (function.Operator is string symbol)
+                {
+                    //func (연산자): 구조체 생성자 안에서만 연산자를 다시 정의할수 있음 (Jyuno 1.6.0)
+                    if (!Grammar.IsOverloadable(symbol))
+                    {
+                        emit($"$fail({Quote($"연산자 '{symbol}'은/는 다시 정의할수 없습니다.")});" , s.Line);
+                        uses_operators = true;
+                        return;
+                    }
+                    if (cx.Scope.Function is not { IsStruct: true })
+                    {
+                        emit($"$fail({Quote($"연산자 '{symbol}'은/는 구조체(struct) 안에서만 다시 정의할수 있습니다.")});" , s.Line);
+                        uses_operators = true;
+                        return;
+                    }
+                    //구조체 안의 for 반복에서 정의하면 그 반복의 영역에 만들어지므로 연산자로 쓰이지 않음
+                    if (cx.Scope.Kind is not ScopeKind.Struct)
+                        return;
+                    //연산자 함수는 필드가 아니므로 만들어진 순서($o)에 넣지 않음
+                    function_slot = $"{self_of(cx.Scope)}.{prop(symbol)}";
+                    order = "";
+                    fname = "op" + mangle(symbol);
+                }
+                else
                 {
                     emit("$funcSyntax();" , s.Line);
                     return;
                 }
-                alias_guard(cx , function.Name , s.Line);
-                string function_slot = slot(cx.Scope , function.Name);
                 //구조체 함수(생성자 영역에서 정의한 함수): 구조체 정의마다 한번 만들고, 구조체 값은 this로 받음
                 bool method = cx.Scope.Kind is ScopeKind.Struct && function.InnerScope.Parent == cx.Scope;
-                string order = order_push(cx , cx.Scope , function.Name);
-                set_status(cx , cx.Scope , function.Name , 'D');
                 //함수 본문: 바깥 영역의 '없음'은 호출할 때 생길수 있으므로 '모름'
                 State st = new();
                 foreach (var (scope , m) in cx.St)
@@ -804,7 +995,6 @@ sealed class Emitter
                 Cx fcx = new(function.InnerScope , fn , st);
                 var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}");
                 var declarations = function.InnerScope.NameOrder.Select(n => $"{slot(function.InnerScope , n)} = U").ToList();
-                string fname = mangle(function.Name);
                 List<(string, int)>? saved = null;
                 if (method)
                 {
@@ -947,7 +1137,7 @@ sealed class Emitter
         emit($"if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(structure)}" , -2);
         int temp_at = output.Count;
         emit("" , line);
-        emit($"const {self} = new $T{inner.Id}({string.Join(", " , inner.NameOrder.Select(_ => "U").Prepend("[]"))});" , line);
+        emit($"const {self} = new $T{inner.Id}({string.Join(", " , inner.NameOrder.Select(prop).Concat(operator_props(inner)).Select(_ => "U").Prepend("[]"))});" , line);
         gen_block(fcx , structure.Body);
         emit($"return {self}; }} finally {{ $depth--; }} }};" , structure.EndLine);
         if (fn.Temps > 0)
@@ -962,11 +1152,13 @@ sealed class Emitter
         {
             Scope inner = f.InnerScope;
             string t = $"$T{inner.Id}";
-            var props = inner.NameOrder.Select(prop).ToList();
+            var fields = inner.NameOrder.Select(prop).ToList();
+            //다시 정의한 연산자(구조체 함수)도 속성이지만 필드가 아니므로 비교하지 않음
+            var props = fields.Concat(operator_props(inner)).ToList();
             yield return $"class {t} extends JStruct {{ constructor({string.Join(", " , props.Prepend("o"))}) {{ super(); this.$o = o;{string.Concat(props.Select(p => $" this.{p} = {p};"))} }} }}";
             yield return $"{t}.prototype.$name = {Quote(f.Name!)}; {t}.prototype.$line = {f.Line}; {t}.prototype.$jn = {{ {string.Join(", " , inner.NameOrder.Select(n => $"{prop(n)}: {Quote(n)}"))} }};";
             yield return $"{t}.prototype.$copy = function (m) {{ return new {t}({string.Join(", " , props.Select(p => $"copyValue(this.{p}, m)").Prepend("this.$o"))}); }};";
-            yield return $"{t}.prototype.$same = function (b) {{ return sameOrder(this, b){string.Concat(props.Select(p => $" && fieldSame(this.{p}, b.{p})"))}; }};";
+            yield return $"{t}.prototype.$same = function (b) {{ return sameOrder(this, b){string.Concat(fields.Select(p => $" && fieldSame(this.{p}, b.{p})"))}; }};";
         }
     }
 
@@ -1004,6 +1196,11 @@ sealed class Emitter
         {
             head.Add("const { JStruct, copyValue, own, equalS2 } = $R;");
             head.Add("const { $structSyntax, $bm, $unbindIf, $aliasDefine } = $X;");
+        }
+        if (uses_operators)
+        {
+            head.Add("const { opEq, opNe, opLt, opGt, opLe, opGe, opXor, opShl, opShr, opNeg, opPlus, opNot, opCom } = $R;");
+            head.Add("const { $fail } = $X;");
         }
         for (int i = 0 ; i < consts.Count ; i++)
             head.Add($"const $k{i} = {consts[i]};");

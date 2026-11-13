@@ -48,6 +48,40 @@ const COPIED = new Map();
 function copyStruct(v) { const c = v.$copy(COPIED); if (COPIED.size !== 0) COPIED.clear(); return c; }
 const own = (v) => (v instanceof JStruct ? copyStruct(v) : v);
 
+// 구조체가 다시 정의한 연산자 (Jyuno 1.6.0의 'func +' 등): 구조체 함수처럼 'f_' + 이름을 바꾼 속성 ('+' → f__002b)
+// 이름에는 연산자 글자가 들어갈수 없으므로 필드/구조체 함수와 겹치지 않고, 필드가 아니므로 $o에는 없음
+const OPS = {};
+for (const s of ['+', '-', '*', '/', '%', '<<', '>>', '<', '>', '<=', '>=', '==', '!=', '&', '|', '^', '!', '~']) OPS[s] = 'f_' + Array.from(s, (c) => '_' + c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+const OP_EQ = OPS['=='], OP_NE = OPS['!='];
+// v가 연산자(sym)를 다시 정의한 구조체 값이라면 그 구조체 함수
+function opFn(v, sym) {
+  if (v instanceof JStruct) { const f = v[OPS[sym]]; if (typeof f === 'function') return f; }
+  return undefined;
+}
+// 연산자 함수는 받는 값(왼쪽 값)의 복사본에서 실행 (함수가 필드를 바꿔도 원래 값은 그대로)
+const callOp = (v, f, args) => f.apply(copyStruct(v), args);
+const NOOV = Symbol('no-overload');
+function ov(v, sym, arg) { const f = opFn(v, sym); return f === undefined ? NOOV : callOp(v, f, [arg]); }
+// Overloads.cs: 다시 정의한 비교 연산자로 비교 (없다면 undefined)
+// a > b → b < a, a < b → b > a, a <= b → !(a > b), a >= b → !(a < b)
+function ovLess(a, b) { let r = ov(a, '<', b); if (r === NOOV) r = ov(b, '>', a); return r === NOOV ? undefined : truthy(r); }
+function ovGreater(a, b) { let r = ov(a, '>', b); if (r === NOOV) r = ov(b, '<', a); return r === NOOV ? undefined : truthy(r); }
+// 정렬 등에서 쓰는 순서 (Overloads.Order)
+function ovOrder(a, b) {
+  const less = ovLess(a, b);
+  if (less === undefined) return undefined;
+  if (less) return -1;
+  return ovLess(b, a) === true ? 1 : 0;
+}
+// JyunoCommands.overloaded: 첫 인자가 연산자를 다시 정의한 구조체 값이라면 첫 두 인자를 그 연산자로 계산하고 나머지를 이어서 계산 (아니라면 NOOV)
+function overloaded(args, sym, again) {
+  if (args.length < 2) return NOOV;
+  const f = opFn(args[0], sym);
+  if (f === undefined) return NOOV;
+  const r = callOp(args[0], f, [args[1]]);
+  return args.length === 2 ? r : again([r, ...args.slice(2)]);
+}
+
 // C#의 JyunoException 및 .NET 예외 (netType: 플레이그라운드에 보여줄 예외 타입 이름, JyunoException이면 null)
 class JyunoError extends Error {
   constructor(message, netType = null) { super(message); this.netType = netType; }
@@ -242,7 +276,13 @@ function vmod(a, b) {
 }
 
 // Values.Same (equal). 구조체 값끼리 비교는 sameS (구조체가 없는 프로그램의 equal2는 이전과 같은 코드)
-const sameS = (a, b) => (a instanceof JStruct ? b instanceof JStruct && a.$line === b.$line && a.$same(b) : same(a, b));
+// ==를 다시 정의한 구조체 값은 그 결과 (1.6.0)
+const sameS = (a, b) => (a instanceof JStruct ? sameStruct(a, b) : same(a, b));
+function sameStruct(a, b) {
+  const f = a[OP_EQ];
+  if (typeof f === 'function') return truthy(callOp(a, f, [b]));
+  return b instanceof JStruct && a.$line === b.$line && a.$same(b);
+}
 function same(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a === b;
   if (a === b) return a === a || typeof a !== 'number';
@@ -286,6 +326,7 @@ function compare(a, b) {
     if (a !== a || b !== b) return Number.isInteger(a) && Number.isInteger(b) ? 0 : null;
     return a < b ? -1 : a > b ? 1 : 0;
   }
+  if (a instanceof JStruct || b instanceof JStruct) { const o = ovOrder(a, b); if (o !== undefined) return o; } // <, >를 다시 정의한 구조체 값
   const ia = tryInt(a), ib = tryInt(b);
   if (ia !== undefined && ib !== undefined) return ia < ib ? -1 : ia > ib ? 1 : 0;
   const ra = tryReal(a), rb = tryReal(b);
@@ -350,6 +391,13 @@ function colAdd(first, args, start) {
   }
   return createLike(first, items);
 }
+// 구조체 값이 있을 때 HashSet<object>(SameComparer)에서 값 찾기: 해시가 같은 값(구조체는 같은 struct 줄)만, 최근에 넣은 값부터 비교
+// (==를 다시 정의한 구조체 값은 넣어둔 값의 함수가 실행되므로 호출 순서와 횟수가 C#과 같아야 함)
+const sameHash = (x, y) => (x instanceof JStruct ? y instanceof JStruct && x.$line === y.$line : !(y instanceof JStruct));
+function setFind(set, v) {
+  for (let i = set.length - 1; i >= 0; i--) { const s = set[i]; if (sameHash(s, v) && sameS(s, v)) return true; }
+  return false;
+}
 // SameComparer와 같은 기준의 키 (NaN은 어떤 값과도 같지 않음)
 function sameKey(v) {
   if (v === null) return 'z';
@@ -362,9 +410,11 @@ function sameKey(v) {
 }
 function colSub(first, remove) {
   const all = remove instanceof JList ? remove.a : [remove];
-  if (all.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교
+  if (all.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교 (C#의 HashSet처럼 차례대로)
+    const set = [];
+    for (const y of all) if (!setFind(set, y)) set.push(y);
     const items = [];
-    for (const x of first.a) if (!all.some((y) => sameS(x, y))) items.push(x);
+    for (const x of first.a) if (!setFind(set, x)) items.push(x);
     return createLike(first, items);
   }
   const set = new Set();
@@ -450,6 +500,8 @@ const builtins = {
   },
   add(args) {
     if (args.length === 0) throw err('덧셈을 할 값들을 넣지 않았습니다.');
+    const o = overloaded(args, '+', builtins.add);
+    if (o !== NOOV) return o;
     if (args[0] instanceof JList) return colAdd(args[0], args, 1);
     if (args.length === 1) return args[0];
     for (const a of args) if (typeof a === 'string') { let s = ''; for (const x of args) s += str(x); return s; }
@@ -463,6 +515,8 @@ const builtins = {
   },
   mul(args) {
     if (args.length === 0) return 1;
+    const o = overloaded(args, '*', builtins.mul);
+    if (o !== NOOV) return o;
     if (typeof args[0] === 'string') {
       if (args.length === 1) return args[0];
       return repeatString(args[0], args[1]);
@@ -482,6 +536,8 @@ const builtins = {
   greater(args) { return ordered(args, 'greater', 1); },
   and(args) {
     if (args.length === 0) throw err('and 연산을 할 값이 필요합니다.');
+    const o = overloaded(args, '&', builtins.and);
+    if (o !== NOOV) return o;
     const b = bitwise(args, 'and');
     if (b !== undefined) return b;
     for (const a of args) if (!truthy(a)) return false;
@@ -489,6 +545,8 @@ const builtins = {
   },
   or(args) {
     if (args.length === 0) throw err('or 연산을 할 값이 필요합니다.');
+    const o = overloaded(args, '|', builtins.or);
+    if (o !== NOOV) return o;
     const b = bitwise(args, 'or');
     if (b !== undefined) return b;
     for (const a of args) if (truthy(a)) return true;
@@ -502,7 +560,12 @@ function ordered(args, name, sign) {
   if (args.length === 0) throw err(`${name} 비교를 할 값이 필요합니다.`);
   let result = true;
   for (let i = 1; i < args.length; i++) {
-    const o = compare(args[i - 1], args[i]);
+    const a = args[i - 1], b = args[i];
+    if (a instanceof JStruct || b instanceof JStruct) { // <, >를 다시 정의한 구조체 값
+      const r = sign < 0 ? ovLess(a, b) : ovGreater(a, b);
+      if (r !== undefined) { if (!r) result = false; continue; }
+    }
+    const o = compare(a, b);
     if (o === null || (sign < 0 ? !(o < 0) : !(o > 0))) result = false;
   }
   return result;
@@ -534,6 +597,7 @@ function add2(a, b) {
     if (Number.isInteger(a) && Number.isInteger(b)) { const r = a + b; return (r <= MAXS && r >= -MAXS) ? r : big2(BigInt(a) + BigInt(b)); }
     return D(a + b);
   }
+  if (a instanceof JStruct) { const f = opFn(a, '+'); if (f !== undefined) return callOp(a, f, [b]); }
   if (typeof a === 'string') return typeof b === 'string' ? a + b : a + str(b);
   if (a instanceof JList) return colAdd(a, [a, b], 1);
   if (typeof b === 'string') return str(a) + b;
@@ -544,6 +608,7 @@ function sub2(a, b) {
     if (Number.isInteger(a) && Number.isInteger(b)) { const r = a - b; return (r <= MAXS && r >= -MAXS) ? r : big2(BigInt(a) - BigInt(b)); }
     return D(a - b);
   }
+  if (a instanceof JStruct) { const f = opFn(a, '-'); if (f !== undefined) return callOp(a, f, [b]); }
   if (a instanceof JList) return colSub(a, b);
   if (typeof a === 'string') {
     if (b === null) throw nullError();
@@ -572,6 +637,7 @@ function div2(a, b) {
     }
     return D(a / b);
   }
+  if (a instanceof JStruct) { const f = opFn(a, '/'); if (f !== undefined) return callOp(a, f, [b]); }
   if (typeof a === 'string') {
     if (b === null) throw nullError();
     const sep = str(b);
@@ -590,6 +656,7 @@ function mod2(a, b) {
     }
     return D(a % b);
   }
+  if (a instanceof JStruct) { const f = opFn(a, '%'); if (f !== undefined) return callOp(a, f, [b]); }
   if (b === null) throw nullError();
   if (tryInt(b) == 0 && isInt(b)) throw err('0으로 나눌수 없습니다.'); // eslint-disable-line eqeqeq
   if (a === null) throw nullError();
@@ -599,11 +666,13 @@ const equal2 = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a ===
 const equalS2 = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : sameS(a, b)); // 구조체가 있는 프로그램
 function less2(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a < b;
+  if (a instanceof JStruct || b instanceof JStruct) { const r = ovLess(a, b); if (r !== undefined) return r; }
   const o = compare(a, b);
   return o !== null && o < 0;
 }
 function greater2(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a > b;
+  if (a instanceof JStruct || b instanceof JStruct) { const r = ovGreater(a, b); if (r !== undefined) return r; }
   const o = compare(a, b);
   return o !== null && o > 0;
 }
@@ -618,6 +687,7 @@ function or2(a, b) {
 function not1(a) {
   if (typeof a === 'number' && Number.isInteger(a)) { const r = -a - 1; return r >= -MAXS ? r : big2(~BigInt(a)); }
   if (typeof a === 'bigint') return big2(~a);
+  if (a instanceof JStruct) { const f = opFn(a, '!'); if (f !== undefined) return callOp(a, f, []); }
   return !truthy(a);
 }
 function length1(v) {
@@ -625,6 +695,116 @@ function length1(v) {
   if (v instanceof JList) return v.a.length;
   if (v === null) throw nullError();
   throw err(`'${str(v)}'은/는 문자열 또는 배열/리스트가 아니므로 길이를 구할수 없습니다.`);
+}
+
+// ───────────── 연산자 (Jyuno 1.6.0, OperatorCompiler.cs의 binary/unary) ─────────────
+// +, -, *, /, %, &, |는 같은 계산을 하는 내장 함수의 빠른 경로(add2 등)를 그대로 사용
+// 다시 정의한 연산자는 왼쪽 값의 구조체 함수를 오른쪽 값을 인자로 호출하고, 결과를 그대로 돌려줌 (비교 연산자도 bool로 바꾸지 않음)
+// 다시 정의하지 않은 비교 연산자는 다른 비교 연산자에서 이끌어냄 (Overloads.cs, 이때는 bool)
+function opEq(a, b) { // 구조체가 있는 프로그램의 == (없다면 equal2)
+  if (typeof a === 'number' && typeof b === 'number') return a === b;
+  if (a instanceof JStruct) {
+    const f = a[OP_EQ];
+    if (typeof f === 'function') return callOp(a, f, [b]);
+    return b instanceof JStruct && a.$line === b.$line && a.$same(b);
+  }
+  return same(a, b);
+}
+function opNe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a !== b;
+  if (a instanceof JStruct) {
+    const f = a[OP_NE];
+    if (typeof f === 'function') return callOp(a, f, [b]);
+    const e = a[OP_EQ];
+    if (typeof e === 'function') return !truthy(callOp(a, e, [b]));
+    return !(b instanceof JStruct && a.$line === b.$line && a.$same(b));
+  }
+  return !same(a, b);
+}
+function opLt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a < b;
+  if (a instanceof JStruct || b instanceof JStruct) {
+    const f = opFn(a, '<'); if (f !== undefined) return callOp(a, f, [b]);
+    const r = ov(b, '>', a); if (r !== NOOV) return truthy(r);
+  }
+  const o = compare(a, b);
+  return o !== null && o < 0;
+}
+function opGt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a > b;
+  if (a instanceof JStruct || b instanceof JStruct) {
+    const f = opFn(a, '>'); if (f !== undefined) return callOp(a, f, [b]);
+    const r = ov(b, '<', a); if (r !== NOOV) return truthy(r);
+  }
+  const o = compare(a, b);
+  return o !== null && o > 0;
+}
+function opLe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a <= b;
+  if (a instanceof JStruct || b instanceof JStruct) {
+    const f = opFn(a, '<='); if (f !== undefined) return callOp(a, f, [b]);
+    const g = ovGreater(a, b); if (g !== undefined) return !g;
+  }
+  const o = compare(a, b);
+  return o !== null && o <= 0;
+}
+function opGe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a >= b;
+  if (a instanceof JStruct || b instanceof JStruct) {
+    const f = opFn(a, '>='); if (f !== undefined) return callOp(a, f, [b]);
+    const l = ovLess(a, b); if (l !== undefined) return !l;
+  }
+  const o = compare(a, b);
+  return o !== null && o >= 0;
+}
+// ^: 정수끼리는 비트 XOR, 그 외에는 참/거짓이 다른지
+function opXor(a, b) {
+  if (typeof a === 'number' && typeof b === 'number' && a === (a | 0) && b === (b | 0)) return a ^ b;
+  if (a instanceof JStruct) { const f = opFn(a, '^'); if (f !== undefined) return callOp(a, f, [b]); }
+  const x = tryInt(a), y = tryInt(b);
+  if (x !== undefined && y !== undefined) return big2(BigInt(x) ^ BigInt(y));
+  return truthy(a) !== truthy(b);
+}
+// <<, >>: 정수끼리만 (C#의 long처럼 이동 횟수는 하위 6비트, >>는 부호를 유지)
+function opShift(a, b, left) {
+  const sym = left ? '<<' : '>>';
+  if (a instanceof JStruct) { const f = opFn(a, sym); if (f !== undefined) return callOp(a, f, [b]); }
+  const x = tryInt(a), y = tryInt(b);
+  if (x === undefined || y === undefined) throw err(`'${sym}' 연산은 정수끼리만 할수 있습니다. ('${show(a)}' ${sym} '${show(b)}')`);
+  const n = typeof y === 'number' ? (y & 63) : Number(y & 63n);
+  if (left) {
+    if (typeof x === 'number') { const r = x * 2 ** n; if (r <= MAXS && r >= -MAXS) return r + 0; }
+    return big2(BigInt(x) << BigInt(n));
+  }
+  if (typeof x === 'number') return Math.floor(x / 2 ** n) + 0;
+  return big2(BigInt(x) >> BigInt(n));
+}
+const opShl = (a, b) => opShift(a, b, true);
+const opShr = (a, b) => opShift(a, b, false);
+// 단항 연산자
+function opNeg(a) {
+  if (typeof a === 'number') return a === 0 ? 0 : -a; // 정수 0은 -0이 아닌 0
+  if (typeof a === 'bigint') return big2(-a);
+  if (a instanceof JDouble) return new JDouble(-a.v);
+  if (a instanceof JStruct) { const f = opFn(a, '-'); if (f !== undefined) return callOp(a, f, []); }
+  throw err(`'-' 연산은 숫자에만 할수 있습니다. ('${show(a)}')`);
+}
+function opPlus(a) {
+  if (typeof a === 'number' || typeof a === 'bigint' || a instanceof JDouble) return a;
+  if (a instanceof JStruct) { const f = opFn(a, '+'); if (f !== undefined) return callOp(a, f, []); }
+  throw err(`'+' 연산은 숫자에만 할수 있습니다. ('${show(a)}')`);
+}
+function opNot(a) {
+  if (a === true) return false;
+  if (a === false) return true;
+  if (a instanceof JStruct) { const f = opFn(a, '!'); if (f !== undefined) return callOp(a, f, []); }
+  return !truthy(a);
+}
+function opCom(a) {
+  if (typeof a === 'number' && Number.isInteger(a)) { const r = -a - 1; return r >= -MAXS ? r : big2(~BigInt(a)); }
+  if (typeof a === 'bigint') return big2(~a);
+  if (a instanceof JStruct) { const f = opFn(a, '~'); if (f !== undefined) return callOp(a, f, []); }
+  throw err(`'~' 연산은 정수에만 할수 있습니다. ('${show(a)}')`);
 }
 
 // ───────────── 수학 (JyunoCommands.AddMath) ─────────────
@@ -871,7 +1051,7 @@ function addCollectionBuiltins() {
       const list = colTarget(args, name);
       if (list.a.some((x) => x instanceof JStruct)) { // 구조체 값은 필드끼리 비교 (키를 만들수 없으므로 하나씩)
         const items = [];
-        for (const x of list.a) if (!items.some((y) => sameS(y, x))) items.push(x); // NaN은 어떤 값과도 같지 않음
+        for (const x of list.a) if (!setFind(items, x)) items.push(x); // NaN은 어떤 값과도 같지 않음
         return createLike(list, items);
       }
       const seen = new Set(), items = [];
@@ -1301,7 +1481,8 @@ function addMath(host) {
 }
 
 // ───────────── 생성 코드가 쓰는 도우미 ─────────────
-const R = { U, JDouble, JList, JConst, Early, EARLY_NULL, JStruct, copyValue, own, equalS2, truthy, forItems, repeatCount, add2, sub2, mul2, div2, mod2, equal2, less2, greater2, and2, or2, not1, length1, add3, mul3 };
+const R = { U, JDouble, JList, JConst, Early, EARLY_NULL, JStruct, copyValue, own, equalS2, truthy, forItems, repeatCount, add2, sub2, mul2, div2, mod2, equal2, less2, greater2, and2, or2, not1, length1, add3, mul3,
+  opEq, opNe, opLt, opGt, opLe, opGe, opXor, opShl, opShr, opNeg, opPlus, opNot, opCom };
 
 function helpers(meta) {
   const E = (m, t = null) => new JyunoError(m, t);
@@ -1367,6 +1548,8 @@ function helpers(meta) {
       return U;
     },
     $aliasDefine(name) { throw E(`Native JS 제약: 구조체 값의 멤버 이름 '${name}'을/를 다시 정의할수 없습니다.`, 'NativeJsRestriction'); },
+    // 연산자를 잘못 쓴 식, 다시 정의할수 없는 연산자 (Jyuno 1.6.0)
+    $fail(message) { throw E(message); },
   };
   // 줄이 속한 함수 줄 (meta.functions: [시작 줄, endfunc 줄] 목록, 안쪽 함수가 뒤에 옴)
   function ownerOf(line) {
