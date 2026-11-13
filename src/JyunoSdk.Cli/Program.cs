@@ -28,7 +28,9 @@ public static class Program
   --commands <묶음,...>          사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O                 (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
-  --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)";
+  --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
+  --static-typing[=strict]       (실행, 검사) [실험] 실행 전에 모든 타입을 추론하고, 실패하면 실행하지 않습니다.
+                                 기본은 실용 단계(입력 변환의 null은 실행할 때 확인), strict는 null까지 모두 증명";
 
     public static int Main(string[] args)
     {
@@ -77,7 +79,7 @@ public static class Program
         public UsageException(string message) : base(message) { }
     }
 
-    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput , bool Optimize);
+    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput , bool Optimize , string? StaticTyping);
 
     static Arguments Parse(string[] args , CommandGroups commands)
     {
@@ -88,6 +90,7 @@ public static class Program
         bool native_js = false;
         string? native_js_output = null;
         bool optimize = false;
+        string? static_typing = null;
         for (int i = 0 ; i < args.Length ; i++)
         {
             string arg = args[i];
@@ -130,6 +133,12 @@ public static class Program
                 case "--write" or "-w":
                     write = true;
                     break;
+                case "--static-typing" or "--static-typing=pragmatic":
+                    static_typing = "pragmatic";
+                    break;
+                case "--static-typing=strict":
+                    static_typing = "strict";
+                    break;
                 case "--spaces":
                     spaces = int.TryParse(value() , out int n) && n > 0 ? n : throw new UsageException("--spaces 다음에는 양의 정수가 와야 합니다.");
                     break;
@@ -140,7 +149,7 @@ public static class Program
                     break;
             }
         }
-        return new(files , commands , hosts , write , spaces , native_js , native_js_output , optimize);
+        return new(files , commands , hosts , write , spaces , native_js , native_js_output , optimize , static_typing);
     }
 
     static bool is_js(string path) => Path.GetExtension(path).ToLowerInvariant() is ".js" or ".mjs" or ".cjs";
@@ -161,7 +170,18 @@ public static class Program
         Runtime runtime = new(ToRuntime(parsed.Commands));
         if (parsed.NativeJs)
             return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands);
-        using Interpreter interpreter = runtime.Create(File.ReadAllLines(path));
+        string[] lines = File.ReadAllLines(path);
+        //[실험] 정적 타입 검사: 실패하면 실행하지 않음
+        if (parsed.StaticTyping is string level)
+        {
+            int failed = StaticTyping.Report(path , lines , runtime , level , out _);
+            if (failed > 0)
+            {
+                Console.Error.WriteLine($"{path}: 정적 타입 검사에서 오류 {failed}개를 찾아서 실행하지 않습니다.");
+                return 1;
+            }
+        }
+        using Interpreter interpreter = runtime.Create(lines);
         //실험적 최적화 (Jyuno 1.5.2부터, 기본값은 꺼짐): 결과는 같고 구조체 복사와 작은 함수 호출이 빨라짐
         interpreter.EscapeAnalysis = parsed.Optimize;
         interpreter.Inlining = parsed.Optimize;
@@ -223,6 +243,12 @@ public static class Program
                     errors++;
                 else if (diagnostic.Severity is DiagnosticSeverity.Warning)
                     warnings++;
+            }
+            //[실험] 정적 타입 검사 (문법 오류가 없을 때만)
+            if (parsed.StaticTyping is string level && !document.Diagnostics.Any(o => o.Severity is DiagnosticSeverity.Error))
+            {
+                errors += StaticTyping.Report(path , File.ReadAllLines(path) , new Runtime(ToRuntime(parsed.Commands)) , level , out int type_warnings , Console.Out);
+                warnings += type_warnings;
             }
         }
         Console.WriteLine($"오류 {errors}개, 경고 {warnings}개");

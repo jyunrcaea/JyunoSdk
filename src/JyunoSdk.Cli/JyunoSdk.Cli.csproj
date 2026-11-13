@@ -21,4 +21,9 @@
     <ProjectReference Include="..\JyunoSdk.NativeJs\JyunoSdk.NativeJs.csproj" />
   </ItemGroup>
 
+  <!-- [실험] 정적 타입 검사(static-typing 옵션)는 그 기능이 있는 Jyuno 소스로 빌드할 때만 켜짐: -p:JyunoSource=(Jyuno.csproj) -p:JyunoStaticTyping=true -->
+  <PropertyGroup Condition="'$(JyunoStaticTyping)' == 'true' And '$(JyunoSource)' != ''">
+    <DefineConstants>$(DefineConstants);JYUNO_STATIC_TYPING</DefineConstants>
+  </PropertyGroup>
+
 </Project>

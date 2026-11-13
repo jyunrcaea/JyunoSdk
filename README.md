@@ -60,6 +60,12 @@ jyuno --version                버전을 출력합니다.
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
+  --static-typing[=strict]     (실행, 검사) [실험] 실행 전에 모든 타입을 추론하고, 실패하면 실행하지 않습니다.
+```
+
+`--static-typing`은 실험 기능이라 정적 타입 검사(``JyunoTypeChecker``)가 있는 Jyuno 소스로 빌드해야 켜집니다.
+```
+dotnet build -p:JyunoSource=../Jyuno/Jyuno.csproj -p:JyunoStaticTyping=true
 ```
 
 ### 대화형 프롬프트
