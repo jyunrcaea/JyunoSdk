@@ -25,6 +25,8 @@ public static class DiagnosticCodes
     public const string MisplacedKeyword = "JY1005";
     /// <summary>goto로 함수 안팎을 넘나듦</summary>
     public const string GotoAcrossFunction = "JY1006";
+    /// <summary>연산자를 잘못 씀 (값이 없는 연산자, ':'가 없는 조건 연산자 등, Jyuno 1.6.0부터)</summary>
+    public const string OperatorSyntax = "JY1007";
     /// <summary>정의되지 않은 이름</summary>
     public const string UndefinedName = "JY2001";
     /// <summary>함수를 괄호 없이 인자로 사용 (값을 읽을수 없음)</summary>

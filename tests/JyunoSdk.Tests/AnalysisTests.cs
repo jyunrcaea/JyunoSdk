@@ -287,11 +287,13 @@ console.writeline (equal p q) (string q)") },
     [Fact]
     public void FunctionUsedAsValue()
     {
-        var document = Parse("func f" , "return 1" , "endfunc" , "x = add f 1" , "return add 1 2" , "y = add (f) 1");
+        var document = Parse("func f" , "return 1" , "endfunc" , "x = add f 1" , "return add 1 2" , "y = add (f) 1" , "return 1 2");
         var warnings = document.Diagnostics.Where(d => d.Code == DiagnosticCodes.FunctionAsValue).ToList();
-        Assert.Equal(new[] { 3 , 4 } , warnings.Select(d => d.Line));
-        //return add 1 2: 첫 값만 사용됨
-        Assert.Contains(document.Diagnostics , d => d.Code == DiagnosticCodes.KeywordArguments && d.Line == 4);
+        Assert.Equal(new[] { 3 } , warnings.Select(d => d.Line));
+        //return add 1 2: 키워드 인자도 식이므로 add를 호출 (Jyuno 1.6.0부터)
+        Assert.DoesNotContain(document.Diagnostics , d => d.Line == 4);
+        //return 1 2: 첫 값만 사용됨
+        Assert.Contains(document.Diagnostics , d => d.Code == DiagnosticCodes.KeywordArguments && d.Line == 6);
     }
 
     [Fact]
@@ -307,10 +309,52 @@ console.writeline (equal p q) (string q)") },
     [Fact]
     public void OperatorsAndKeywordsInWrongPlaces()
     {
-        Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("x = add 1 + 2")));
+        //함수 호출은 연산자보다 먼저 묶임: (add 1) + 2 (Jyuno 1.6.0부터)
+        Assert.Empty(Parse("x = add 1 + 2").Diagnostics);
         Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("+ 1 2")));
         Assert.Contains(DiagnosticCodes.MisplacedKeyword , Codes(Parse("x = (if 1)")));
         Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("while 1" , "end 3")));
+    }
+
+    //Jyuno 1.6.0의 연산자
+    [Theory]
+    [InlineData("x = 1 +" , "연산자 '+' 다음에 값이 없습니다.")]
+    [InlineData("x = * 2" , "연산자 '*' 앞에 값이 없습니다.")]
+    [InlineData("x = (1 -)" , "연산자 '-' 다음에 값이 없습니다.")]
+    [InlineData("x = 1 ? 2" , "조건 연산자 '?' 다음에는 ':'가 와야 합니다. (조건 ? 참일때 : 거짓일때)")]
+    [InlineData("x = 1 ? 2 :" , "조건 연산자 ':' 다음에 값이 없습니다.")]
+    [InlineData("x = 1|x +=" , "연산자 '+=' 다음에 값이 없습니다.")]
+    [InlineData("if 1 && (2 <)|end" , "연산자 '<' 다음에 값이 없습니다.")]
+    public void OperatorSyntaxErrors(string code , string message)
+    {
+        var errors = Parse(code.Split('|')).Diagnostics.Where(d => d.Code == DiagnosticCodes.OperatorSyntax).ToList();
+        var error = Assert.Single(errors);
+        Assert.Equal(DiagnosticSeverity.Error , error.Severity);
+        Assert.Equal(message , error.Message);
+    }
+
+    [Fact]
+    public void OperatorExpressions()
+    {
+        //연산자 식 안의 이름도 찾음
+        var document = Parse("a = 1" , "b = 2" , "c = a + b * -a" , "c -= (b ? a : b) ?? 0" , "if a < b && !(c == 3)" , "  console.writeline (a << 2 | c)" , "end");
+        Assert.Empty(document.Diagnostics);
+        Assert.Equal(4 , document.Lines[2].Names.Count);
+        //정의되지 않은 이름
+        Assert.Contains(Parse("x = y + 1").Diagnostics , d => d.Code == DiagnosticCodes.UndefinedName && d.Message.Contains("'y'"));
+        Assert.Contains(Parse("z += 1").Diagnostics , d => d.Code == DiagnosticCodes.UndefinedName && d.Message.Contains("'z'"));
+        //주석
+        Assert.Empty(Parse("x = 1 // 주석 + * )").Diagnostics);
+    }
+
+    [Fact]
+    public void OperatorFunctions()
+    {
+        //구조체 안에서만 연산자를 다시 정의할수 있음
+        Assert.Empty(Parse("struct point" , "  param x" , "  func +" , "    param other" , "    return point (x + other.x)" , "  endfunc" , "endstruct").Diagnostics);
+        Assert.Contains(Parse("func +" , "endfunc").Diagnostics , d => d.Code == DiagnosticCodes.KeywordSyntax && d.Message == "연산자 '+'은/는 구조체(struct) 안에서만 다시 정의할수 있습니다.");
+        Assert.Contains(Parse("struct p" , "  func &&" , "  endfunc" , "endstruct").Diagnostics , d => d.Code == DiagnosticCodes.KeywordSyntax && d.Message == "연산자 '&&'은/는 다시 정의할수 없습니다.");
+        Assert.Contains(Parse("struct p" , "  func f" , "    func ==" , "    endfunc" , "  endfunc" , "endstruct").Diagnostics , d => d.Code == DiagnosticCodes.KeywordSyntax);
     }
 
     [Fact]

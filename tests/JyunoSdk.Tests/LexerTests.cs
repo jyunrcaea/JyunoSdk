@@ -38,12 +38,25 @@ public class LexerTests
     [InlineData("a.b.c [1] ~@<>*/+")]
     [InlineData("'a'\"b\"'c'")]
     [InlineData("x = -1-2-a")]
+    //연산자 (Jyuno 1.6.0)
+    [InlineData("x = a+b*-3 - -4")]
+    [InlineData("x=(a)-1")]
+    [InlineData("x -= 1")]
+    [InlineData("a <<= 2 >>= 3 ??= 4")]
+    [InlineData("if a<=b&&c!=d||!e")]
+    [InlineData("x = a ? b : c")]
+    [InlineData("x = 1 // 주석 'not closed")]
+    [InlineData("// 주석만")]
+    [InlineData("x = a / b")]
+    [InlineData("x = 'a//b' // c")]
+    [InlineData("func +")]
+    [InlineData("y = ~x ^ 3 % 2 & 1 | 0")]
     public void SameAsJyuno(string line) => AssertSameAsJyuno(line);
 
     [Fact]
     public void RandomLinesSameAsJyuno()
     {
-        const string alphabet = "abxz09-.'\"\\ ()=:+\t　가";
+        const string alphabet = "abxz09-.'\"\\ ()=:+\t　가<>!&|?/*%^~";
         Random random = new(614);
         for (int i = 0 ; i < 5000 ; i++)
         {

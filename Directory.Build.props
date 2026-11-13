@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
-    <Version>0.4.1</Version>
+    <Version>0.5.0</Version>
     <Authors>jyunrcaea</Authors>
     <Company>jyunrcaea</Company>
     <Product>JyunoSdk</Product>
@@ -29,7 +29,7 @@
       dotnet build -p:JyunoSource=../Jyuno/Jyuno.csproj
   -->
   <PropertyGroup>
-    <JyunoVersion>1.5.3</JyunoVersion>
+    <JyunoVersion>1.6.1</JyunoVersion>
     <JyunoSource></JyunoSource>
     <!-- 상대 경로는 이 파일(저장소 최상위) 기준 -->
     <JyunoSourcePath Condition="'$(JyunoSource)' != ''">$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('$(MSBuildThisFileDirectory)', '$(JyunoSource)'))))</JyunoSourcePath>
