@@ -29,8 +29,9 @@ public static class Program
   --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O                 (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
-  --static-typing[=strict]       (실행, 검사) [실험] 실행 전에 모든 타입을 추론하고, 실패하면 실행하지 않습니다.
-                                 기본은 실용 단계(입력 변환의 null은 실행할 때 확인), strict는 null까지 모두 증명";
+  --static-typing[=strict|lenient] (실행, 검사) [실험] 실행 전에 모든 타입을 추론하고, 실패하면 실행하지 않습니다.
+                                 기본은 실용 단계(입력 변환의 null은 실행할 때 확인), strict는 null까지 모두 증명,
+                                 lenient는 유니온 중 하나라도 되는 연산은 통과(나머지는 실행 중 확인)";
 
     public static int Main(string[] args)
     {
@@ -138,6 +139,9 @@ public static class Program
                     break;
                 case "--static-typing=strict":
                     static_typing = "strict";
+                    break;
+                case "--static-typing=lenient":
+                    static_typing = "lenient";
                     break;
                 case "--spaces":
                     spaces = int.TryParse(value() , out int n) && n > 0 ? n : throw new UsageException("--spaces 다음에는 양의 정수가 와야 합니다.");

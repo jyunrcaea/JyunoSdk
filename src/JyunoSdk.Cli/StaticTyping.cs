@@ -12,7 +12,7 @@ static class StaticTyping
     {
         output ??= Console.Error;
 #if JYUNO_STATIC_TYPING
-        var result = Jyuno.Compiler.JyunoTypeChecker.Check(lines , runtime , level is "strict" ? Jyuno.Compiler.TypeCheckLevel.Strict : Jyuno.Compiler.TypeCheckLevel.Pragmatic);
+        var result = Jyuno.Compiler.JyunoTypeChecker.Check(lines , runtime , level switch { "strict" => Jyuno.Compiler.TypeCheckLevel.Strict , "lenient" => Jyuno.Compiler.TypeCheckLevel.Lenient , _ => Jyuno.Compiler.TypeCheckLevel.Pragmatic });
         foreach (var d in result.Errors)
             output.WriteLine($"{path}:{d.Line + 1}: error type/{d.Category}: {d.Message}");
         foreach (var d in result.Warnings)
