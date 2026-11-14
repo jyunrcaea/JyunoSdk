@@ -28,4 +28,30 @@ static class StaticTyping
         return 1;
 #endif
     }
+
+    /// <summary>
+    /// 검사를 통과한 프로그램을 제한 모드로 빌드해서, 검사기가 증명한 타입으로 컴파일 (IlTyped)
+    /// 제한 모드로 빌드할수 없는 프로그램(구조체, 삭제 등)이면 null (인터프리터로 실행)
+    /// </summary>
+    public static Func<object?>? TryCompile(IReadOnlyList<string> lines , Runtime runtime , out string engine)
+    {
+#if JYUNO_STATIC_TYPING
+        try
+        {
+            byte[] image = Jyuno.Compiler.JyunoProgramImage.Build(lines , runtime);
+            JyunoProgram program = Jyuno.Compiler.JyunoProgramImage.Load(image , runtime , Jyuno.Compiler.JyunoEngine.IlTyped);
+            //검사기의 타입을 쓰지 못한 경우(함수 안의 함수, 레이블 등)는 기본 추론의 IL 또는 클로저 엔진 (결과는 같음)
+            engine = program.Engine;
+            return program.Run;
+        }
+        catch (Jyuno.Compiler.JyunoBuildException e)
+        {
+            engine = "Interpreter (제한 모드로 빌드할수 없음: " + (e.Errors.Count > 0 ? e.Errors[0].Message : e.Message) + ")";
+            return null;
+        }
+#else
+        engine = "Interpreter";
+        return null;
+#endif
+    }
 }

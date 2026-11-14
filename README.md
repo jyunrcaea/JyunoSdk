@@ -67,6 +67,9 @@ jyuno --version                버전을 출력합니다.
 ```
 dotnet build -p:JyunoSource=../Jyuno/Jyuno.csproj -p:JyunoStaticTyping=true
 ```
+검사를 통과한 스크립트는 인터프리터 대신, 검사기가 증명한 타입으로 컴파일한 코드(IL, ``JyunoEngine.IlTyped``)로 실행합니다.
+결과와 오류 메시지는 인터프리터와 같고, 제한 모드로 빌드할수 없는 스크립트는 인터프리터로 실행합니다.
+어느 엔진으로 실행했는지는 ``JYUNO_SHOW_ENGINE=1`` 환경 변수로 볼수 있습니다.
 
 ### 대화형 프롬프트
 ```

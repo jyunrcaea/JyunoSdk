@@ -31,7 +31,8 @@ public static class Program
   --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
   --static-typing[=strict|lenient] (실행, 검사) [실험] 실행 전에 모든 타입을 추론하고, 실패하면 실행하지 않습니다.
                                  기본은 실용 단계(입력 변환의 null은 실행할 때 확인), strict는 null까지 모두 증명,
-                                 lenient는 유니온 중 하나라도 되는 연산은 통과(나머지는 실행 중 확인)";
+                                 lenient는 유니온 중 하나라도 되는 연산은 통과(나머지는 실행 중 확인)
+                                 검사를 통과하면 검사기가 증명한 타입으로 컴파일해서 실행합니다. (JYUNO_SHOW_ENGINE=1: 실행 엔진 표시)";
 
     public static int Main(string[] args)
     {
@@ -175,7 +176,7 @@ public static class Program
         if (parsed.NativeJs)
             return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands);
         string[] lines = File.ReadAllLines(path);
-        //[실험] 정적 타입 검사: 실패하면 실행하지 않음
+        //[실험] 정적 타입 검사: 실패하면 실행하지 않고, 통과하면 검사기가 증명한 타입으로 컴파일해서 실행 (IlTyped)
         if (parsed.StaticTyping is string level)
         {
             int failed = StaticTyping.Report(path , lines , runtime , level , out _);
@@ -184,14 +185,25 @@ public static class Program
                 Console.Error.WriteLine($"{path}: 정적 타입 검사에서 오류 {failed}개를 찾아서 실행하지 않습니다.");
                 return 1;
             }
+            Func<object?>? compiled = StaticTyping.TryCompile(lines , runtime , out string engine);
+            if (Environment.GetEnvironmentVariable("JYUNO_SHOW_ENGINE") is "1")
+                Console.Error.WriteLine($"{path}: 실행 엔진 {engine}");
+            if (compiled is not null)
+                return Finish(path , compiled);
         }
         using Interpreter interpreter = runtime.Create(lines);
         //실험적 최적화 (Jyuno 1.5.2부터, 기본값은 꺼짐): 결과는 같고 구조체 복사와 작은 함수 호출이 빨라짐
         interpreter.EscapeAnalysis = parsed.Optimize;
         interpreter.Inlining = parsed.Optimize;
+        return Finish(path , () => interpreter.Run());
+    }
+
+    //실행하고 문법 오류/Jyuno 오류를 출력
+    static int Finish(string path , Func<object?> run)
+    {
         try
         {
-            object? result = interpreter.Run();
+            object? result = run();
             if (result is Jyuno.Language.GrammarError error)
             {
                 Console.Error.WriteLine($"{path}:{error.Line + 1}: 문법 오류: {error.Message}");
