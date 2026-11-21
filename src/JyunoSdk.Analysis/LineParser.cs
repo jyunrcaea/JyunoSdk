@@ -67,8 +67,17 @@ sealed class LineParser
             ParseKeyword((KeywordType)tokens[0].Value);
             return;
         }
-        int end = ParseExpression(0 , false);
-        Ignored(end , "이 부분은 실행되지 않습니다. (식이 이미 끝났습니다)");
+        Trailing(ParseExpression(0 , false));
+    }
+
+    //식이 끝난 뒤에 남은 토큰: Jyuno 1.6.2부터 실행하면 문법 오류 (이전에는 무시되었음)
+    void Trailing(int from)
+    {
+        if (from >= count || failed)
+            return;
+        SourceToken token = tokens[from];
+        Report(DiagnosticCodes.TrailingTokens , DiagnosticSeverity.Error , $"식이 끝난 뒤에 남은 값이 있습니다: '{line.Text[token.Start..token.End]}' (연산자는 앞뒤를 띄어 쓰고, 함수 호출은 괄호로 묶어주세요)" , token.Start , tokens[count - 1].End);
+        failed = true;
     }
 
     void ParseKeyword(KeywordType keyword)
@@ -133,8 +142,7 @@ sealed class LineParser
                     break;
                 if (count > 3 && IsPrefix(2 , '='))
                 {
-                    int end = ParseExpression(3 , false);
-                    Ignored(end , "이 부분은 실행되지 않습니다. (식이 이미 끝났습니다)");
+                    Trailing(ParseExpression(3 , false));
                     break;
                 }
                 Report(DiagnosticCodes.KeywordSyntax , DiagnosticSeverity.Error , "local은 'local (이름)' 또는 'local (이름) = (값)' 형식으로만 쓸수 있습니다." , head.Start , tokens[count - 1].End);
@@ -190,12 +198,38 @@ sealed class LineParser
         failed = true;
         return count;
     }
+    //식의 중첩 깊이 (Jyuno의 OperatorCompiler.enter_expression과 같은 자리에서 세고, 넘으면 같은 문법 오류, Jyuno 1.6.2부터)
+    //아주 깊은 괄호나 연산자가 분석기(언어 서버, jyuno check)를 스택 오버플로로 끝내지 않도록 함
+    const int MaxExpressionDepth = 600;
+    int depth;
+    bool Enter()
+    {
+        if (depth >= MaxExpressionDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            return false;
+        depth++;
+        return true;
+    }
+    int TooDeep(int start)
+        => SyntaxError("식이 너무 깊게 중첩되어 있습니다. (괄호, 연산자, 함수 호출을 여러 줄로 나눠주세요)" , tokens[Math.Min(start , count - 1)]);
     bool IsOperator(int index , string symbol) => index < count && tokens[index].IsOperator(symbol);
     //연산자 다음에 값이 없는지 (줄 끝, ')', ':')
     bool OperandMissing(int index) => index >= count || IsPrefix(index , ')') || IsPrefix(index , ':');
 
     //Interpreter.compile_expression과 같은 규칙: start부터 식 하나를 훑고, 식 다음 토큰의 위치를 반환
     int ParseExpression(int start , bool closed)
+    {
+        if (!Enter())
+            return TooDeep(start);
+        try
+        {
+            return ParseExpressionCore(start , closed);
+        }
+        finally
+        {
+            depth--;
+        }
+    }
+    int ParseExpressionCore(int start , bool closed)
     {
         if (start >= count)
             return count;
@@ -243,6 +277,19 @@ sealed class LineParser
     //연산자 식 하나 (조건 연산자 ?:가 가장 낮은 우선순위)
     int ParseOperators(int start , bool closed)
     {
+        if (!Enter())
+            return TooDeep(start);
+        try
+        {
+            return ParseOperatorsCore(start , closed);
+        }
+        finally
+        {
+            depth--;
+        }
+    }
+    int ParseOperatorsCore(int start , bool closed)
+    {
         int end = ParseBinary(start , closed , 2);
         if (failed || !IsOperator(end , "?"))
             return end;
@@ -263,6 +310,19 @@ sealed class LineParser
     //우선순위가 min 이상인 이항 연산자로 이어진 식
     int ParseBinary(int start , bool closed , int min)
     {
+        if (!Enter())
+            return TooDeep(start);
+        try
+        {
+            return ParseBinaryCore(start , closed , min);
+        }
+        finally
+        {
+            depth--;
+        }
+    }
+    int ParseBinaryCore(int start , bool closed , int min)
+    {
         int end = ParseUnary(start , closed);
         while (!failed && end < count && tokens[end].Operator is string symbol)
         {
@@ -278,6 +338,19 @@ sealed class LineParser
     }
 
     int ParseUnary(int start , bool closed)
+    {
+        if (!Enter())
+            return TooDeep(start);
+        try
+        {
+            return ParseUnaryCore(start , closed);
+        }
+        finally
+        {
+            depth--;
+        }
+    }
+    int ParseUnaryCore(int start , bool closed)
     {
         if (start < count && tokens[start].Operator is string symbol)
         {

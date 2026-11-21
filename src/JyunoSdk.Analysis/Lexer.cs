@@ -45,8 +45,8 @@ public static class Lexer
         for (int index = begin ; index < finish ; index++)
         {
             char start = line[index];
-            //줄 중간에서는 ' '만 공백으로 취급함 (탭은 이름의 일부가 됨)
-            if (start is ' ')
+            //줄 중간에서는 ' '와 탭을 공백으로 취급함 (Jyuno 1.6.2부터 탭도 공백, 이전에는 이름의 일부가 되었음)
+            if (start is ' ' or '\t')
                 continue;
             //숫자 (숫자 바로 앞에 붙은 '-'는 음수 부호, 단 'a-1'처럼 값 바로 뒤에 붙은 '-'는 뺄셈 연산자)
             if (IsDigit(start) || (start is '-' && index + 1 < finish && IsDigit(line[index + 1]) && !AfterValue(line , begin , index)))
@@ -133,7 +133,7 @@ public static class Lexer
             //이름 또는 키워드
             {
                 int from = index;
-                while (index < finish && !Grammar.Prefixes.Contains(line[index]) && !Grammar.OperatorChars.Contains(line[index]) && line[index] is not (' ' or '"' or '\''))
+                while (index < finish && !Grammar.Prefixes.Contains(line[index]) && !Grammar.OperatorChars.Contains(line[index]) && line[index] is not (' ' or '\t' or '"' or '\''))
                     index++;
                 string name = line[from..index];
                 int to = index;
@@ -157,7 +157,7 @@ public static class Lexer
         char before = line[index - 1];
         if (before is ')')
             return true;
-        return before is not ' ' && !Grammar.Prefixes.Contains(before) && !Grammar.OperatorChars.Contains(before);
+        return before is not (' ' or '\t') && !Grammar.Prefixes.Contains(before) && !Grammar.OperatorChars.Contains(before);
     }
 
     /// <summary>이름에 쓸수 있는 글자인지 (자동 완성에서 커서 앞의 단어를 찾을 때 사용)</summary>

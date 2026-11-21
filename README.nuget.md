@@ -62,6 +62,7 @@ Options:
   --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
   --native-js [output file]    Translate to Native JS and save. (Run it with node <output file>.js)
 ```
+A runtime error is printed as `file:line: 오류: message` and returns exit code 1. Ctrl+C stops after the running line and returns exit code 130; pressing it again exits immediately. (since 0.5.1)
 
 ### Interactive prompt
 ```
@@ -149,6 +150,7 @@ vim.lsp.enable('jyuno')
 | JY1005 | Error | Keyword used somewhere other than the start of a line |
 | JY1006 | Error | goto jumps into or out of a function |
 | JY1007 | Error | Operator expression syntax error (operator without a value, operator function outside a struct or for an operator that can't be redefined, etc., since Jyuno 1.6.0) |
+| JY1008 | Error | Value left over after the expression ended (e.g. `x = 5 -3`, an error when run since Jyuno 1.6.2) |
 | JY2001 | Warning | Undefined function/variable |
 | JY2002 | Warning | Function passed as an argument without parentheses (its value can't be read) |
 | JY2003 | Warning | Token that is ignored and never run |
@@ -161,6 +163,7 @@ vim.lsp.enable('jyuno')
 Translates Jyuno code to JavaScript. The generated file contains the Jyuno runtime (values, operations, console/math commands), so it runs in Node.js or a browser with no other files.
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
+Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js

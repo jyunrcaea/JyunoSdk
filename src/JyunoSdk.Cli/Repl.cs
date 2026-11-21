@@ -194,15 +194,30 @@ public sealed class Repl
     }
 
     /// <summary>값을 Jyuno 코드처럼 보여줌</summary>
-    public static string Show(object? value , bool nested = false) => value switch {
+    public static string Show(object? value , bool nested = false) => show(value , nested , null);
+    //visiting: 지금 보여주고 있는 배열/리스트 (자기 자신을 담은 리스트는 [...])
+    static string show(object? value , bool nested , HashSet<object>? visiting) => value switch {
         null => "null",
         bool b => b ? "true" : "false",
         string s => nested ? "'" + s.Replace("\\" , "\\\\").Replace("'" , "\\'").Replace("\n" , "\\n") + "'" : s,
         double d => ShowReal(d),
         IFormattable f => f.ToString(null , CultureInfo.InvariantCulture),
-        IList list => "[" + string.Join(", " , list.Cast<object?>().Select(o => Show(o , true))) + "]",
+        IList list => show_list(list , visiting ?? new(ReferenceEqualityComparer.Instance)),
         _ => value.ToString() ?? "null"
     };
+    static string show_list(IList list , HashSet<object> visiting)
+    {
+        if (!visiting.Add(list))
+            return "[...]";
+        try
+        {
+            return "[" + string.Join(", " , list.Cast<object?>().Select(o => show(o , true , visiting))) + "]";
+        }
+        finally
+        {
+            visiting.Remove(list);
+        }
+    }
 
     static string ShowReal(double value)
     {

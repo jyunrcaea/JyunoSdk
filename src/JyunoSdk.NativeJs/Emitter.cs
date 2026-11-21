@@ -589,11 +589,14 @@ sealed class Emitter
             }
         }
         Code r = gen(cx , b.Right);
-        string l = left.Text;
+        string l = left.Text, rt = r.Text;
         //왼쪽 값이 변수의 구조체 값을 가리키는데 오른쪽 식이 그 값을 바꿀수 있다면 미리 복사 (인터프리터는 읽을때 복사)
-        if (has_structs && may_struct(b.Left) && effects(b.Right))
+        //다시 정의한 연산자 함수가 있다면 계산 도중에 그 함수가 변수의 값을 바꿀수 있으므로 양쪽 모두 복사 (0.5.1)
+        if (has_structs && may_struct(b.Left) && (has_operators || effects(b.Right)))
             l = $"own({l})";
-        return binary_code(b.Operator , l , r.Text);
+        if (has_structs && has_operators && may_struct(b.Right))
+            rt = $"own({rt})";
+        return binary_code(b.Operator , l , rt);
     }
 
     Code gen_unary(Cx cx , UnaryExpression u)
@@ -673,6 +676,12 @@ sealed class Emitter
                 case G.Builtin:
                 {
                     var a = gen_args(cx , e.Arguments);
+                    //다시 정의한 연산자 함수(==, < 등)가 있다면 내장 함수(equal, array.indexof 등)가 계산하는 도중에 그 함수가 변수의 값을 바꿀수 있으므로,
+                    //인터프리터처럼 인자는 읽은 시점의 값 (0.5.1)
+                    if (has_structs && has_operators)
+                        for (int i = 0 ; i < a.Count ; i++)
+                            if (!a[i].StartsWith("own(" , StringComparison.Ordinal) && may_struct(e.Arguments[i]))
+                                a[i] = $"own({a[i]})";
                     if (Fast.TryGetValue((e.Name, a.Count) , out string? fast))
                     {
                         //구조체가 있다면 equal은 구조체 값끼리도 비교하는 함수
@@ -1053,7 +1062,9 @@ sealed class Emitter
                 //다시 실행될수 있는 param(반복문 안, goto가 있는 함수)은 실행할 때마다 인자의 원래 값을 받아야 하므로 복사본을 넣음
                 string argument = $"$a{p.ParameterIndex}";
                 bool repeats = has_structs && (cx.Fn.Loops > 0 || !trackable(cx.Scope));
-                emit($"{order_push(cx , cx.Scope , p.Name)}{slot(cx.Scope , p.Name)} = ({argument} === undefined ? null : {(repeats ? $"own({argument})" : argument)});" , s.Line);
+                //구조체 값을 받으면 같은 영역에 먼저 만든 'p.멤버' 이름을 지움 (대입과 같음, 0.5.1)
+                string target = slot(cx.Scope , p.Name);
+                emit(bind_clear(cx , cx.Scope , p.Name , target , $"{order_push(cx , cx.Scope , p.Name)}{target} = ({argument} === undefined ? null : {(repeats ? $"own({argument})" : argument)})") + ";" , s.Line);
                 set_status(cx , cx.Scope , p.Name , 'D');
                 return;
             case LocalStatement local:
@@ -1158,7 +1169,7 @@ sealed class Emitter
             yield return $"class {t} extends JStruct {{ constructor({string.Join(", " , props.Prepend("o"))}) {{ super(); this.$o = o;{string.Concat(props.Select(p => $" this.{p} = {p};"))} }} }}";
             yield return $"{t}.prototype.$name = {Quote(f.Name!)}; {t}.prototype.$line = {f.Line}; {t}.prototype.$jn = {{ {string.Join(", " , inner.NameOrder.Select(n => $"{prop(n)}: {Quote(n)}"))} }};";
             yield return $"{t}.prototype.$copy = function (m) {{ return new {t}({string.Join(", " , props.Select(p => $"copyValue(this.{p}, m)").Prepend("this.$o"))}); }};";
-            yield return $"{t}.prototype.$same = function (b) {{ return sameOrder(this, b){string.Concat(fields.Select(p => $" && fieldSame(this.{p}, b.{p})"))}; }};";
+            yield return $"{t}.prototype.$same = function (b) {{ return sameFields(this, b); }};";
         }
     }
 
