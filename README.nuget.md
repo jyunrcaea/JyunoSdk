@@ -1,7 +1,7 @@
 # JyunoSdk
 
 The SDK for the [Jyuno](https://github.com/jyunrcaea/Jyuno) language. (Formerly JyunoPrompt)  
-[GitHub](https://github.com/jyunrcaea/JyunoPrompt) · [Wiki](https://github.com/jyunrcaea/JyunoPrompt/wiki) · [Website & Playground](https://jyunrcaea.github.io/JyunoWeb)
+[GitHub](https://github.com/jyunrcaea/JyunoSdk) · [Wiki](https://github.com/jyunrcaea/JyunoSdk/wiki) · [Website & Playground](https://jyunrcaea.github.io/JyunoWeb)
 
 A single `jyuno` command provides:
 
@@ -26,7 +26,7 @@ The Jyuno interpreter comes from the [`Jyuno`](https://www.nuget.org/packages/Jy
 ## Installation
 
 ### Executable (recommended)
-Download the `jyuno` file for your operating system from [Releases](https://github.com/jyunrcaea/JyunoPrompt/releases). It runs without installing .NET.
+Download the `jyuno` file for your operating system from [Releases](https://github.com/jyunrcaea/JyunoSdk/releases). It runs without installing .NET.
 
 ### dotnet tool
 ```
@@ -34,7 +34,7 @@ dotnet tool install -g JyunoSdk
 ```
 
 ### Build from source
-Clone the [repository](https://github.com/jyunrcaea/JyunoPrompt) and run (requires the .NET 8 SDK):
+Clone the [repository](https://github.com/jyunrcaea/JyunoSdk) and run (requires the .NET 8 SDK):
 ```
 dotnet run --project src/JyunoSdk.Cli
 ```
@@ -158,7 +158,7 @@ vim.lsp.enable('jyuno')
 | JY2005 | Warning | Command group not provided by the configured program (e.g. file) |
 
 ## Native JS
-> The introduction, usage, restrictions, internals and research results (performance and compatibility verification) are covered in detail in the [wiki](https://github.com/jyunrcaea/JyunoPrompt/wiki/Native-JS) (in Korean).
+> The introduction, usage, restrictions, internals and research results (performance and compatibility verification) are covered in detail in the [wiki](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS) (in Korean).
 
 Translates Jyuno code to JavaScript. The generated file contains the Jyuno runtime (values, operations, console/math commands), so it runs in Node.js or a browser with no other files.
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.

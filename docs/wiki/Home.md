@@ -18,7 +18,7 @@
 
 ## 설치
 
-- **실행 파일**: [Releases](https://github.com/jyunrcaea/JyunoPrompt/releases)에서 운영체제에 맞는 `jyuno`를 받으세요. .NET 설치가 필요 없습니다.
+- **실행 파일**: [Releases](https://github.com/jyunrcaea/JyunoSdk/releases)에서 운영체제에 맞는 `jyuno`를 받으세요. .NET 설치가 필요 없습니다.
 - **dotnet tool**: `dotnet tool install -g JyunoSdk`
 - **라이브러리**: `dotnet add package JyunoSdk.NativeJs` (또는 `JyunoSdk.Analysis`, `JyunoSdk.LanguageServer`)
 
@@ -39,6 +39,6 @@ JyunoSdk 0.5.0 (Jyuno 1.6.1)
 
 ## 더 보기
 
-- [JyunoSdk README](https://github.com/jyunrcaea/JyunoPrompt#readme) — 명령어와 옵션, LSP 설정, 진단 코드 전체 목록
+- [JyunoSdk README](https://github.com/jyunrcaea/JyunoSdk#readme) — 명령어와 옵션, LSP 설정, 진단 코드 전체 목록
 - [Jyuno](https://github.com/jyunrcaea/Jyuno) — 언어와 인터프리터 (NuGet `Jyuno`)
 - [JyunoWeb](https://jyunrcaea.github.io/JyunoWeb/) — 브라우저 플레이그라운드와 문제 풀기

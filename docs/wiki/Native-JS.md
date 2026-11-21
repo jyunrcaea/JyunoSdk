@@ -79,7 +79,7 @@ $h0(["fib 25 = {1}", $0_fib(25)]);
 
 ## 3분 만에 써보기
 
-1. JyunoSdk 0.2.0 이상을 설치합니다. (`dotnet tool install -g JyunoSdk` 또는 [Releases](https://github.com/jyunrcaea/JyunoPrompt/releases))
+1. JyunoSdk 0.2.0 이상을 설치합니다. (`dotnet tool install -g JyunoSdk` 또는 [Releases](https://github.com/jyunrcaea/JyunoSdk/releases))
 2. 변환합니다: `jyuno hello.jyuno --native-js`
 3. 실행합니다: `node hello.js` (표준 입출력 사용)
 

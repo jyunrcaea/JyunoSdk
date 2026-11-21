@@ -8,7 +8,7 @@
 - [[연구 결과|Native-JS-Research]]
 
 **링크**
-- [저장소](https://github.com/jyunrcaea/JyunoPrompt)
-- [README](https://github.com/jyunrcaea/JyunoPrompt#readme)
+- [저장소](https://github.com/jyunrcaea/JyunoSdk)
+- [README](https://github.com/jyunrcaea/JyunoSdk#readme)
 - [Jyuno](https://github.com/jyunrcaea/Jyuno)
 - [JyunoWeb](https://jyunrcaea.github.io/JyunoWeb/)
