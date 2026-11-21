@@ -424,7 +424,8 @@ public class AnalysisFuzzTests
     static readonly string[] fragments = {
         "if" , "else" , "end" , "while" , "repeat" , "for" , "break" , "goto" , "func" , "param" , "endfunc" , "return" , "local" , "struct" , "endstruct" , "me.x" ,
         "x" , "y" , "f" , "add" , "console.writeline" , "math.pi" , "file.read" , "=" , ":" , "(" , ")" , "+" , "1" , "-2" , "3.5" ,
-        "'s'" , "\"t" , "lbl:" , "array" , "\t" , " " , "99999999999999999999"
+        "'s'" , "\"t" , "lbl:" , "array" , "\t" , " " , "99999999999999999999" ,
+        "ttl" , "endttl" , "try" , "catch" , "tried" , "throw"
     };
 
     //어떤 입력이라도 분석과 언어 서버 기능이 예외를 내지 않아야 함

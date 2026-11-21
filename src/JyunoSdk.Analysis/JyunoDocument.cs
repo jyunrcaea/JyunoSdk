@@ -85,12 +85,43 @@ public sealed class JyunoDocument
                 errors[block.OpenLine] = "struct 키워드는 endstruct 키워드로 종료 표시가 있어야 합니다.";
                 return;
             }
+            if (block.Kind is BlockKind.Ttl)
+            {
+                errors[block.OpenLine] = "ttl 키워드는 endttl 키워드로 종료 표시가 있어야 합니다.";
+                return;
+            }
+            if (block.Kind is BlockKind.Try)
+            {
+                errors[block.OpenLine] = "try 키워드는 tried 키워드로 종료 표시가 있어야 합니다.";
+                //catch가 있는 try라면 catch도 오류
+                if (block.CatchLine >= 0)
+                    errors[block.CatchLine] = errors[block.OpenLine];
+                return;
+            }
             errors[block.OpenLine] = "모든 조건문(if, while 등) 키워드는 end 키워드로 종료 표시가 있어야 합니다.";
             if (block.ElseLine >= 0)
                 errors[block.ElseLine] = errors[block.OpenLine];
         }
         //가장 안쪽 func/struct 블록 (본문을 따로 실행하는 블록)
         Block? innermost_body() => opened.FirstOrDefault(b => b.IsBody);
+        //같은 함수 안에서 가장 안쪽의 kind 블록 (ttl, try)
+        Block? innermost(BlockKind kind)
+        {
+            foreach (Block o in opened)
+            {
+                if (o.IsBody)
+                    return null;
+                if (o.Kind == kind)
+                    return o;
+            }
+            return null;
+        }
+        //키워드 다음에 아무것도 없어야 하는 줄 (try, tried: Jyuno에서는 블록 구조 오류)
+        void bare(int line , string keyword)
+        {
+            if (Lines[line].Tokens.Count > 1 && errors[line] is null)
+                errors[line] = $"{keyword} 다음에는 아무것도 올수 없습니다.";
+        }
 
         for (int line = 0 ; line < Lines.Count ; line++)
         {
@@ -105,6 +136,8 @@ public sealed class JyunoDocument
                 KeywordType.For => BlockKind.For,
                 KeywordType.Func => BlockKind.Func,
                 KeywordType.Struct => BlockKind.Struct,
+                KeywordType.Ttl => BlockKind.Ttl,
+                KeywordType.Try => BlockKind.Try,
                 _ => null
             };
             if (kind is BlockKind k)
@@ -115,6 +148,8 @@ public sealed class JyunoDocument
                 blocks.Add(block);
                 info.Block = block;
                 opened.Push(block);
+                if (k is BlockKind.Try)
+                    bare(line , "try");
                 continue;
             }
             switch (keyword)
@@ -132,6 +167,14 @@ public sealed class JyunoDocument
                     if (!opened.TryPeek(out var opener) || opener.IsBody)
                     {
                         errors[line] = "end와 짝이 되는 if, while, repeat, for 키워드가 없습니다.";
+                        break;
+                    }
+                    //ttl은 endttl, try는 tried로 닫아야 함
+                    if (opener.Kind is BlockKind.Ttl or BlockKind.Try)
+                    {
+                        errors[line] = opener.Kind is BlockKind.Ttl
+                            ? "end와 짝이 되는 if, while, repeat, for 키워드가 없습니다. (ttl은 endttl로 닫아야 합니다)"
+                            : "end와 짝이 되는 if, while, repeat, for 키워드가 없습니다. (try는 tried로 닫아야 합니다)";
                         break;
                     }
                     opened.Pop();
@@ -154,13 +197,70 @@ public sealed class JyunoDocument
                     func.CloseLine = func.EndLine = line;
                     info.Block = func;
                     break;
+                case KeywordType.EndTtl:
+                {
+                    Block? limit = innermost(BlockKind.Ttl);
+                    if (limit is null)
+                    {
+                        errors[line] = "endttl과 짝이 되는 ttl 키워드가 없습니다.";
+                        break;
+                    }
+                    while (opened.Peek() != limit)
+                        unclosed(opened.Pop() , line - 1);
+                    opened.Pop();
+                    limit.CloseLine = limit.EndLine = line;
+                    info.Block = limit;
+                    break;
+                }
+                case KeywordType.Catch:
+                {
+                    //가장 안쪽 블록이 아직 catch가 없는 try여야 함
+                    if (opened.TryPeek(out var attempt) && attempt.Kind is BlockKind.Try && attempt.CatchLine < 0)
+                    {
+                        attempt.CatchLine = line;
+                        info.Block = attempt;
+                        var tokens = info.Tokens;
+                        if (tokens.Count > 2 || (tokens.Count is 2 && tokens[1].Type is not TokenType.Name))
+                            errors[line] = "catch 다음에는 오류를 받을 변수 이름 하나만 올수 있습니다.";
+                    }
+                    else
+                        errors[line] = "catch는 try와 tried 사이에 한번만 쓸수 있습니다.";
+                    break;
+                }
+                case KeywordType.Tried:
+                {
+                    Block? attempt = innermost(BlockKind.Try);
+                    if (attempt is null)
+                    {
+                        errors[line] = "tried와 짝이 되는 try 키워드가 없습니다.";
+                        break;
+                    }
+                    while (opened.Peek() != attempt)
+                        unclosed(opened.Pop() , line - 1);
+                    opened.Pop();
+                    attempt.CloseLine = attempt.EndLine = line;
+                    info.Block = attempt;
+                    bare(line , "tried");
+                    //catch가 없는 try (오류를 처리할 곳이 없음)
+                    if (attempt.CatchLine < 0)
+                        errors[attempt.OpenLine] = errors[line] = "try와 tried 사이에는 catch가 있어야 합니다.";
+                    break;
+                }
+                case KeywordType.Throw:
+                {
+                    //값 없는 throw: 처리중인 오류를 다시 던지므로 catch 본문 안에서만 (같은 함수 안)
+                    if (info.Tokens.Count is 1 && !opened.TakeWhile(o => !o.IsBody).Any(o => o.Kind is BlockKind.Try && o.CatchLine >= 0))
+                        errors[line] = "값 없는 throw는 catch와 tried 사이에서만 쓸수 있습니다. (처리중인 오류를 다시 던짐)";
+                    break;
+                }
                 case KeywordType.Break:
                     Block? loop = null;
                     foreach (Block o in opened)
                     {
                         if (o.IsBody)
                             break;
-                        if (o.Kind is not BlockKind.If)
+                        //if, ttl, try는 반복문이 아니므로 건너뜀 (break로 ttl/try를 빠져나갈수 있음)
+                        if (o.Kind is not (BlockKind.If or BlockKind.Ttl or BlockKind.Try))
                         {
                             loop = o;
                             break;
@@ -211,7 +311,7 @@ public sealed class JyunoDocument
             Block? scope_block = open.FirstOrDefault(b => b.Scope is not null);
             line.Scope = scope_block?.Scope ?? Script;
             int depth = open.Count;
-            if (open.TryPeek(out var inner) && (inner.CloseLine == line.Index || inner.ElseLine == line.Index))
+            if (open.TryPeek(out var inner) && (inner.CloseLine == line.Index || inner.ElseLine == line.Index || inner.CatchLine == line.Index))
                 depth--;
             line.Depth = depth;
             if (line.Block is Block block && block.OpenLine == line.Index)

@@ -106,7 +106,7 @@ If the program that runs the script adds its own functions, pass them with `--ho
 `jyuno lsp` speaks the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) over standard I/O. (Trailing arguments such as `--stdio` are ignored.)
 
 ### Features
-- **Diagnostics**: syntax errors (unclosed strings/parentheses, unmatched end/endfunc, else/break/param placement, func/param/for/local format, operator expressions), undefined names, functions passed as arguments without parentheses, ignored operators/tokens, `goto` jumping into or out of a function, etc.
+- **Diagnostics**: syntax errors (unclosed strings/parentheses, unmatched end/endfunc/endttl/tried, else/catch/break/param placement, func/param/for/local format, operator expressions), undefined names, functions passed as arguments without parentheses, ignored operators/tokens, `goto` jumping into or out of a function, etc.
 - **Completion**: keywords, block snippets (`if … end`, `func … endfunc`, etc.), variables/functions/parameters visible at the current position, built-in commands (with descriptions)
 - **Hover**: built-in command descriptions, user function signatures, variable kinds (local/parameter/label/constant, etc.), operators (`+`, `&&`, `+=`, etc.)
 - **Signature help**: arguments of built-in and user functions
@@ -145,7 +145,7 @@ vim.lsp.enable('jyuno')
 | Code | Severity | Description |
 | --- | --- | --- |
 | JY1001 | Error | Tokenization error (unclosed string, integer out of long range) |
-| JY1002 | Error | Block structure error (end/endfunc/endstruct pairs, else, break, param placement) |
+| JY1002 | Error | Block structure error (end/endfunc/endstruct/endttl/tried pairs, else, catch, break, param placement, placement of a bare throw) |
 | JY1003 | Error | Unclosed parenthesis |
 | JY1004 | Error | Keyword format error (func/struct/param/for/local) |
 | JY1005 | Error | Keyword used somewhere other than the start of a line |
@@ -155,7 +155,7 @@ vim.lsp.enable('jyuno')
 | JY2001 | Warning | Undefined function/variable |
 | JY2002 | Warning | Function passed as an argument without parentheses (its value can't be read) |
 | JY2003 | Warning | Token that is ignored and never run |
-| JY2004 | Warning/Error | Missing or more than one value for if/while/repeat/goto/return |
+| JY2004 | Warning/Error | Missing or more than one value for if/while/repeat/goto/return/ttl/throw |
 | JY2005 | Warning | Command group not provided by the configured program (e.g. file) |
 
 ## Native JS
@@ -165,6 +165,7 @@ Translates Jyuno code to JavaScript. The generated file contains the Jyuno runti
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
 Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
+Since 0.6.0, JyunoSdk uses Jyuno 1.7.0. The analyzer, language server and interactive prompt understand time-limit blocks (`ttl` ~ `endttl`) and exception handling (`try` / `catch` / `tried`, `throw`), but Native JS doesn't translate them yet and reports an error.
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js
@@ -182,6 +183,8 @@ Because variables and functions are translated into fixed slots and called direc
 | Block structure errors (an unmatched end, etc.) are reported before running | |
 | A struct (`struct`) can't be defined inside another struct's constructor | `struct b` inside `struct a` |
 | Member names of a variable holding a struct value (`p.x`, `p.show`) can't be redefined with `func`/`local`/`param`/`struct` (run-time error) | `func p.show` after `p = point 1 2` |
+| Time-limit blocks (`ttl`, Jyuno 1.7.0) are not supported yet | `ttl 5` |
+| Exception handling (`try`/`catch`/`tried`, `throw`, Jyuno 1.7.0) is not supported yet | `try`, `throw 'x'` |
 
 Assigning a value to a variable provided by the program (such as `console.title`) is allowed. If a computed goto target is inside a block, a `Native JS 제약` (Native JS restriction) error is raised at run time.
 The `file.*` and `directory.*` commands are not supported.
