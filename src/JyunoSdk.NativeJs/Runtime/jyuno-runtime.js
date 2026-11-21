@@ -14,8 +14,85 @@
 
 const U = Symbol('undefined-slot'); // 아직 만들어지지 않았거나 삭제된 변수 칸
 
+// ───────────── 메모리 한도 (JyunoSdk 0.6.0, Jyuno 1.7.0의 MemoryLimit) ─────────────
+// V8은 힙이 부족하면 잡을수 없는 오류로 프로세스(브라우저라면 탭)를 끝내므로, 그 전에 JyunoError로 멈춤
+// - 런타임이 값을 만들때마다 어림 크기를 used에 더하고(memAlloc), used가 next를 넘으면 붙잡고 있는 값을 따라가서 잼(memCheck)
+//   (JS에는 할당량을 읽는 API가 없으므로, 할당은 런타임이 직접 셈. 버려진 값은 재지 않으므로 한도와 비교하지 않음)
+// - 붙잡고 있는 값: 생성 코드가 함수/반복 한번마다 등록한 변수 읽기 함수(roots)와 계산 중인 큰 값(temps)에서 시작
+//   (MemoryGuard로 변환한 코드만 roots를 등록함. 아니라면 큰 값 하나를 만들기 전의 확인만 함)
+// - 1MB보다 큰 값은 만들기 전에 크기를 계산해서 확인(memReserve). 붙잡고 있는 값은 한도를 약 1MB까지 넘을수 있음
+const MEM_MIN_STEP = 1 << 20, MEM_HOLD = 1 << 12;
+// 기본 한도: 어림 크기는 V8의 실제 크기보다 작을수 있으므로(짧은 문자열이 많다면 약 2배), 모바일 브라우저도 견딜수 있게 넉넉히 작게
+const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024;
+const MEM = { limit: 0, guard: false, used: 0, next: Infinity, live: 0, roots: [], temps: [] };
+function memAlloc(bytes) { if ((MEM.used += bytes) >= MEM.next) memCheck(0); }
+function memReserve(bytes) {
+  if (MEM.limit === 0 || bytes < MEM_MIN_STEP) return;
+  if (MEM.live + MEM.used + bytes > MEM.limit) memCheck(bytes);
+}
+// 변수에 넣기 전의 큰 값(4KB 이상): 그 값을 만든 함수를 감싼 반복문의 다음 반복까지 잴 때 포함
+// (반복문이 없는 함수는 변수를 등록하지 않으므로, 그 함수의 변수에 담긴 큰 값도 여기서 셈)
+function memHold(v, bytes) { if (MEM.limit !== 0 && bytes >= MEM_HOLD) MEM.temps.push(v); return v; }
+const memMB = (b) => `${Math.round(b / 104857.6) / 10}MB`;
+function memCheck(extra) {
+  // 변수를 알수 없는 코드(MemoryGuard 없이 변환)라면 만든 양을 그대로 씀
+  const live = MEM.guard ? memMeasure() : MEM.live + MEM.used;
+  MEM.live = live;
+  MEM.used = 0;
+  MEM.next = MEM.guard ? Math.max(MEM_MIN_STEP, Math.min(live * 4, MEM.limit - live)) : Infinity;
+  if (live + extra > MEM.limit) {
+    MEM.next = MEM_MIN_STEP; // 오류를 잡고 계속 실행하더라도 곧 다시 잼
+    throw new JyunoError(extra > 0
+      ? `메모리 한도를 넘었습니다. (한도 ${memMB(MEM.limit)}, 사용중 약 ${memMB(live)}, 새로 만들 값 약 ${memMB(extra)})`
+      : `메모리 한도를 넘었습니다. (한도 ${memMB(MEM.limit)}, 사용중 약 ${memMB(live)})`);
+  }
+  if (!MEM.guard) MEM.live = 0; // 버려진 값을 알수 없으므로 누적하지 않음 (큰 값 하나만 확인)
+}
+// 붙잡고 있는 값의 어림 크기 (64비트 V8 기준, 공유된 값은 한번만, 재귀 대신 스택)
+function memMeasure() {
+  const seen = new Set(), stack = [];
+  let total = 0;
+  const visit = (v) => {
+    switch (typeof v) {
+      // JS에서는 같은 내용의 문자열이 같은 객체인지 알수 없으므로 담긴 곳마다 셈 (같은 긴 문자열을 여러 곳에 담았다면 실제보다 크게 셈)
+      case 'string': total += 24 + 2 * v.length; return;
+      case 'number': if (!Number.isInteger(v) || v > 1073741823 || v < -1073741824) total += 16; return;
+      case 'bigint': total += 24; return;
+      case 'object':
+        if (v === null) return;
+        // 구조체 값은 담을 때마다 복사되므로(own) 한 곳에만 있음: 같은 값인지 확인하지 않음 (가장 많은 값이라서 재는 시간이 크게 줄어듦)
+        if (v instanceof JStruct) { stack.push(v); return; }
+        if (!seen.has(v)) { seen.add(v); stack.push(v); }
+        return;
+    }
+  };
+  for (const r of MEM.roots) if (typeof r === 'function') for (const v of r()) visit(v);
+  for (const v of MEM.temps) visit(v);
+  while (stack.length !== 0) {
+    const o = stack.pop();
+    if (o instanceof JList) {
+      const a = o.a;
+      total += 48 + 8 * a.length;
+      if (o.e === 'object' || o.e === 'string' || o.e === 'double') for (let i = 0; i < a.length; i++) visit(a[i]);
+    } else if (o instanceof JStruct) {
+      // 필드는 만들어진 순서($o)에 있는 속성 (구조체 함수는 함수라서 세지 않음, $o는 복사본끼리 공유)
+      const order = o.$o;
+      total += 32 + 8 * order.length;
+      visit(order);
+      for (let i = 0; i < order.length; i++) visit(o[order[i]]);
+    } else if (Array.isArray(o)) {
+      // push로 늘어난 작은 배열(구조체의 $o 등)은 여유 공간이 있음
+      total += 32 + 8 * (o.length + (o.length >> 1) + 16);
+      for (let i = 0; i < o.length; i++) visit(o[i]);
+    } else if (o instanceof JDouble) total += 16;
+    else if (o instanceof JConst || o instanceof Early) { total += 16; visit(o.v); }
+    else total += 16; // 호스트가 넘긴 객체는 안을 따라가지 않음
+  }
+  return total;
+}
+
 class JDouble { constructor(v) { this.v = v; } }
-class JList { constructor(e, fixed, a) { this.e = e; this.fixed = fixed; this.a = a; } }
+class JList { constructor(e, fixed, a) { this.e = e; this.fixed = fixed; this.a = a; memAlloc(48 + 8 * a.length); if (a.length >= 512) memHold(this, 8 * a.length); } }
 class JConst { constructor(v) { this.v = v; } }   // (상수) = (이름) 으로 만든 상수
 class Early { constructor(v) { this.v = v; } }     // 괄호 안의 식이 ')' 전에 끝남 (C#의 EarlyEnd)
 const EARLY_NULL = new Early(null);
@@ -23,6 +100,7 @@ const EARLY_NULL = new Early(null);
 // - 필드/구조체 함수는 'f_' + 이름 속성 (아직 없다면 U), $o는 만들어진 순서의 속성 이름 (생성이 끝나면 바뀌지 않으므로 복사본과 공유)
 // - 프로토타입: $name(구조체 이름), $line(struct 줄, 같은 구조체인지 비교), $jn(속성 이름 → Jyuno 이름), $copy(m)(깊은 복사)
 class JStruct {
+  constructor() { memAlloc(96); }
   get typeName() { return this.$name; }
   fieldProps() { const r = []; for (const p of this.$o) { const v = this[p]; if (v !== U && typeof v !== 'function') r.push(p); } return r; }
   get fieldNames() { return this.fieldProps().map((p) => this.$jn[p]); }
@@ -163,10 +241,26 @@ function str(v) {
 }
 // Values.Text (Jyuno 1.6.2): 배열/리스트는 [1, 2, 3], 원소의 null은 "null", 자기 자신을 담은 배열/리스트는 [...]
 const LISTING = new Set();
+let LIST_TEXT = 0; // 지금 만들고 있는 문자열의 길이 (같은 리스트를 여러번 담은 값은 매우 길어질수 있음)
 function listText(l) {
   if (LISTING.has(l)) return '[...]';
+  const outer = LISTING.size === 0;
+  if (outer) LIST_TEXT = 0;
   LISTING.add(l);
-  try { return '[' + l.a.map(show).join(', ') + ']'; } finally { LISTING.delete(l); }
+  try {
+    const parts = new Array(l.a.length);
+    for (let i = 0; i < parts.length; i++) {
+      const t = show(l.a[i]);
+      parts[i] = t;
+      // 원소 문자열의 길이만 더함 (안쪽 리스트의 원소는 그 리스트에서 더했으므로)
+      if (l.a[i] instanceof JList) continue;
+      if ((LIST_TEXT += t.length + 2) > STRING_MAX) throw err(`문자열이 너무 깁니다. (최대 536,870,912자)`);
+    }
+    const r = '[' + parts.join(', ') + ']';
+    if (outer) memAlloc(2 * r.length);
+    else if (r.length >= MEM_HOLD) memReserve(4 * LIST_TEXT);
+    return r;
+  } finally { LISTING.delete(l); }
 }
 // StructValue.ToString: 'person { name = Jyunni, rating = 2424 }'
 function structText(v) {
@@ -230,7 +324,7 @@ function vadd(a, b) {
   if (ia !== undefined && ib !== undefined) return iadd(ia, ib);
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return D(ra + rb);
-  if (typeof a === 'string' || typeof b === 'string') return str(a) + str(b);
+  if (typeof a === 'string' || typeof b === 'string') return concat2(str(a), str(b));
   throw arithError('+', a, b);
 }
 function vmul(a, b) {
@@ -374,6 +468,9 @@ function createLike(origin, items) {
   return new JList(origin.e, origin.fixed, out);
 }
 function colAdd(first, args, start) {
+  let total = first.a.length;
+  for (let i = start; i < args.length; i++) total += args[i] instanceof JList ? args[i].a.length : 1;
+  memReserve(16 * total);
   const items = first.a.slice();
   for (let i = start; i < args.length; i++) {
     const v = args[i];
@@ -433,8 +530,8 @@ function listSet(list, index, value) {
 }
 // for 문의 순회 대상 (시작할 때 복사)
 function forItems(v) {
-  if (typeof v === 'string') { const r = new Array(v.length); for (let i = 0; i < v.length; i++) r[i] = v[i]; return r; }
-  if (v instanceof JList) return v.a.slice();
+  if (typeof v === 'string') { memReserve(40 * v.length); memAlloc(40 * v.length); const r = new Array(v.length); for (let i = 0; i < v.length; i++) r[i] = v[i]; return r; }
+  if (v instanceof JList) { memReserve(8 * v.a.length); memAlloc(8 * v.a.length); return v.a.slice(); }
   throw err(`'${show(v)}'은/는 순회할수 없습니다. (배열/리스트/문자열만 가능)`);
 }
 // repeat 횟수 (자연수가 아니면 0)
@@ -494,7 +591,7 @@ const builtins = {
     if (o !== NOOV) return o;
     if (args[0] instanceof JList) return colAdd(args[0], args, 1);
     if (args.length === 1) return args[0];
-    for (const a of args) if (typeof a === 'string') { let s = ''; for (const x of args) s += str(x); return s; }
+    for (const a of args) if (typeof a === 'string') { let s = ''; for (const x of args) s = concat2(s, str(x)); return s; }
     let sum = args[0];
     for (let i = 1; i < args.length; i++) sum = vadd(sum, args[i]);
     return sum;
@@ -577,7 +674,10 @@ function repeatString(s, count) {
   if (n === undefined) throw err('문자열을 반복할 횟수는 정수여야 합니다.');
   if (n <= 0 || s.length === 0) return '';
   if (n > Math.floor(STRING_MAX / s.length)) throw err('반복한 문자열이 너무 깁니다. (최대 536,870,912자)');
-  return s.repeat(Number(n));
+  const bytes = 2 * s.length * Number(n);
+  memReserve(bytes);
+  memAlloc(bytes);
+  return memHold(s.repeat(Number(n)), bytes);
 }
 
 // ───────────── 인자 개수가 정해진 빠른 경로 (이름이 내장 함수로 고정된 호출 자리에서 사용) ─────────────
@@ -587,10 +687,17 @@ function add2(a, b) {
     return D(a + b);
   }
   if (a instanceof JStruct) { const f = opFn(a, '+'); if (f !== undefined) return callOp(a, f, [b]); }
-  if (typeof a === 'string') return typeof b === 'string' ? a + b : a + str(b);
+  if (typeof a === 'string') return concat2(a, typeof b === 'string' ? b : str(b));
   if (a instanceof JList) return colAdd(a, [a, b], 1);
-  if (typeof b === 'string') return str(a) + b;
+  if (typeof b === 'string') return concat2(str(a), b);
   return vadd(a, b);
+}
+// 문자열 이어붙이기: 만든 양을 셈 (V8은 이어붙인 문자열을 나중에 펼치므로 결과 길이만큼으로 어림)
+function concat2(a, b) {
+  const n = a.length + b.length;
+  if (n > STRING_MAX) throw err(`문자열이 너무 깁니다. (${n}자, 최대 536,870,912자)`);
+  memAlloc(2 * n);
+  return n >= MEM_HOLD ? memHold(a + b, 2 * n) : a + b;
 }
 function sub2(a, b) {
   if (typeof a === 'number' && typeof b === 'number') {
@@ -969,6 +1076,7 @@ function colRange(args, array, name) {
   if (step > 0n && start < end) count = (end - start - 1n) / step + 1n;
   else if (step < 0n && start > end) count = (start - end - 1n) / -step + 1n;
   if (count > BigInt(MAX_LENGTH)) throw err(`${name}: 원소가 너무 많습니다. (${count}개)`);
+  memReserve(8 * Number(count));
   const n = Number(count), items = new Array(n);
   const last = start + (count - 1n) * step;
   if (n > 0 && start >= -BMAX && start <= BMAX && last >= -BMAX && last <= BMAX) {
@@ -1016,6 +1124,7 @@ function addCollectionBuiltins() {
     f('new', (args, name) => {
       if (args.length === 0) throw err(`${name}: 길이가 필요합니다.`);
       const length = intArg(args[0], '길이', 0, MAX_LENGTH, name);
+      memReserve(8 * length);
       const items = new Array(length).fill(args.length > 1 ? own(args[1]) : null);
       return array ? newArray(items) : newList(items);
     });
@@ -1095,6 +1204,7 @@ function addCollectionBuiltins() {
     resizable(list, name);
     const values = [];
     for (let i = 1; i < args.length; i++) values.push(own(fitOrThrow(list, args[i], name)));
+    memAlloc(8 * values.length);
     for (const v of values) list.a.push(v);
     return list;
   });
@@ -1109,6 +1219,7 @@ function addCollectionBuiltins() {
     resizable(list, name);
     if (args.length < 3) throw err(`${name}: 리스트, 인덱스, 값이 필요합니다.`);
     const at = intArg(args[1], '인덱스', 0, list.a.length, name);
+    memAlloc(8);
     list.a.splice(at, 0, own(fitOrThrow(list, args[2], name)));
     return list;
   });
@@ -1186,6 +1297,8 @@ function addStringBuiltins() {
     need(args, 2, name);
     const s = text(args, 0, name);
     const width = intArg(args[1], '길이', 0, STRING_MAX, name);
+    memReserve(2 * width);
+    memAlloc(2 * width);
     let fill = ' ';
     if (args.length > 2) {
       const c = text(args, 2, name);
@@ -1278,11 +1391,12 @@ function addStringBuiltins() {
     split: (args, name) => {
       need(args, 1, name);
       const s = text(args, 0, name);
+      memReserve(40 * s.length);
       if (args.length === 1) return new JList('string', true, s.split(WHITESPACE_RE));
       const separator = text(args, 1, name);
       return new JList('string', true, separator === '' ? [s] : s.split(separator));
     },
-    tochararray: (args, name) => { need(args, 1, name); return new JList('string', true, text(args, 0, name).split('')); },
+    tochararray: (args, name) => { need(args, 1, name); const s = text(args, 0, name); memReserve(40 * s.length); memAlloc(32 * s.length); return new JList('string', true, s.split('')); },
     charcode: (args, name) => {
       need(args, 1, name);
       const s = text(args, 0, name);
@@ -1344,7 +1458,12 @@ function composite(format, args) {
     const k = parseInt(idx, 10);
     if (k >= args.length) throw new FormatError();
     let s = formatValue(args[k], spec);
-    if (Math.abs(align) > s.length) s = align > 0 ? s.padStart(align) : s.padEnd(-align);
+    if (Math.abs(align) > s.length) {
+      if (Math.abs(align) > STRING_MAX) throw err(`문자열이 너무 깁니다. (${Math.abs(align)}자, 최대 536,870,912자)`);
+      memReserve(2 * Math.abs(align));
+      s = align > 0 ? s.padStart(align) : s.padEnd(-align);
+    }
+    memAlloc(2 * s.length);
     out += s;
   }
   return out;
@@ -1485,6 +1604,8 @@ function helpers(meta) {
   const noSubstitute = () => { throw E('런타임에서 변수 대입 연산을 허용하지 않습니다.'); };
   return {
     $B: builtins,
+    $roots: MEM.roots,
+    $temps: MEM.temps,
     $rv(h, name) { if (typeof h === 'function') noValue(name); return h instanceof JConst ? h.v : h; },
     $chkSet(h, name, v) { if (typeof h === 'function') notVar(name); if (h instanceof JConst) throw E('상수를 변경할수 없습니다.'); return v; },
     $localSet(h, name, v) { if (h === U) return v; if (typeof h === 'function') notVar(name); if (h instanceof JConst) throw E('상수를 변경할수 없습니다.'); return v; },
@@ -1602,6 +1723,8 @@ function createProgram(factory, meta) {
    * options.write(text): 출력 (기본: 모아서 output으로 돌려줌)
    * options.input: console.readline/console.read가 읽을 문자열, 또는 options.readLine()/options.read()
    * options.host: 추가 호스트 { 이름: 함수(args) | { kind: 'func', fn } | { kind: 'var', get, set } | { kind: 'const', value } }
+   * options.memoryLimit: 스크립트가 붙잡고 있을수 있는 메모리의 대략적인 최대 크기 (바이트, 기본 256MB, 0은 제한 없음, JyunoSdk 0.6.0부터)
+   *   넘으면 V8이 프로세스/탭을 끝내기 전에 JyunoError로 멈춤 (MemoryGuard로 변환한 코드만 붙잡고 있는 값을 재고, 아니라면 큰 값 하나만 확인)
    * 결과: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
    */
   function run(options = {}) {
@@ -1620,7 +1743,13 @@ function createProgram(factory, meta) {
     // 프로그램이 추가한 함수에는 구조체 값의 복사본을 넘김 (C#의 StructValue와 같음)
     const ownArgs = (fn) => (args) => fn(args.map(own));
     for (const [name, e] of Object.entries(options.host ?? {})) host.set(name, typeof e === 'function' ? { kind: 'func', fn: ownArgs(e) } : e && e.kind === 'func' ? { ...e, fn: ownArgs(e.fn) } : e);
-    const main = factory(R, helpers(meta), hostApi(host));
+    // 메모리 한도 (호스트 함수가 다른 프로그램을 실행할수 있으므로 끝나면 되돌림)
+    const savedMem = { ...MEM };
+    const memoryLimit = options.memoryLimit ?? DEFAULT_MEMORY_LIMIT;
+    if (!(memoryLimit >= 0)) throw new RangeError('memoryLimit은 0 이상이어야 합니다. (0은 제한 없음)');
+    Object.assign(MEM, { limit: memoryLimit, guard: !!meta.memoryGuard && memoryLimit > 0, used: 0, live: 0, next: memoryLimit > 0 ? MEM_MIN_STEP : Infinity, roots: [], temps: [] });
+    let main;
+    try { main = factory(R, helpers(meta), hostApi(host)); } catch (e) { Object.assign(MEM, savedMem); throw e; }
     const limit = Error.stackTraceLimit;
     Error.stackTraceLimit = 200;
     const done = (r) => (options.write ? r : { ...r, output });
@@ -1632,11 +1761,12 @@ function createProgram(factory, meta) {
       const line = errorLine(e);
       if (e && e.hostAbort) { e.jyunoLine = line; throw e; } // 출력 제한 등은 호스트가 처리 (오류 줄은 e.jyunoLine)
       if (e instanceof JyunoError) return done({ status: 'error', message: e.message, line, exceptionType: e.netType });
-      if (e instanceof RangeError && /string length/i.test(e.message)) return done({ status: 'error', message: 'Insufficient memory to continue the execution of the program.', line, exceptionType: 'OutOfMemoryException' });
+      if (e instanceof RangeError && /string length|array length|allocation failed/i.test(e.message)) return done({ status: 'error', message: 'Insufficient memory to continue the execution of the program.', line, exceptionType: 'OutOfMemoryException' });
       if (e instanceof RangeError && /call stack/i.test(e.message)) return done({ status: 'error', message: '함수 호출이 너무 깊습니다.', line, exceptionType: 'StackOverflow' });
       return done({ status: 'error', message: String((e && e.message) || e), line, exceptionType: (e && e.name) || 'Error' });
     } finally {
       Error.stackTraceLimit = limit;
+      Object.assign(MEM, savedMem);
     }
   }
   // Node.js에서 직접 실행 (node 파일.js): 표준 입출력 사용

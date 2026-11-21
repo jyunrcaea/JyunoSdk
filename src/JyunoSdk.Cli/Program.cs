@@ -28,7 +28,8 @@ public static class Program
   --commands <묶음,...>          사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>              (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O                 (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
-  --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)";
+  --native-js [출력 파일]        Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
+  --no-memory-guard              (Native JS) 메모리 한도 검사를 위한 코드를 넣지 않습니다. (조금 더 빠르지만 큰 값 하나만 확인)";
 
     public static int Main(string[] args)
     {
@@ -77,7 +78,7 @@ public static class Program
         public UsageException(string message) : base(message) { }
     }
 
-    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput , bool Optimize);
+    sealed record Arguments(List<string> Files , CommandGroups Commands , List<string> Hosts , bool Write , int? Spaces , bool NativeJs , string? NativeJsOutput , bool Optimize , bool MemoryGuard = true);
 
     static Arguments Parse(string[] args , CommandGroups commands)
     {
@@ -88,6 +89,7 @@ public static class Program
         bool native_js = false;
         string? native_js_output = null;
         bool optimize = false;
+        bool memory_guard = true;
         for (int i = 0 ; i < args.Length ; i++)
         {
             string arg = args[i];
@@ -124,6 +126,9 @@ public static class Program
                     if (i + 1 < args.Length && !args[i + 1].StartsWith('-') && (is_js(args[i + 1]) || files.Count > 0))
                         native_js_output = args[++i];
                     break;
+                case "--no-memory-guard":
+                    memory_guard = false;
+                    break;
                 case "--optimize" or "-o":
                     optimize = true;
                     break;
@@ -140,7 +145,7 @@ public static class Program
                     break;
             }
         }
-        return new(files , commands , hosts , write , spaces , native_js , native_js_output , optimize);
+        return new(files , commands , hosts , write , spaces , native_js , native_js_output , optimize , memory_guard);
     }
 
     static bool is_js(string path) => Path.GetExtension(path).ToLowerInvariant() is ".js" or ".mjs" or ".cjs";
@@ -160,7 +165,7 @@ public static class Program
         }
         Runtime runtime = new(ToRuntime(parsed.Commands));
         if (parsed.NativeJs)
-            return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands);
+            return ExportNativeJs(path , parsed.NativeJsOutput ?? Path.ChangeExtension(path , ".js") , runtime , parsed.Commands , parsed.MemoryGuard);
         using Interpreter interpreter = runtime.Create(File.ReadAllLines(path));
         //실험적 최적화 (Jyuno 1.5.2부터, 기본값은 꺼짐): 결과는 같고 구조체 복사와 작은 함수 호출이 빨라짐
         interpreter.EscapeAnalysis = parsed.Optimize;
@@ -210,12 +215,12 @@ public static class Program
     static string where(string path , int line) => line >= 0 ? $"{path}:{line + 1}" : path;
 
     //Jyuno 코드를 JavaScript로 변환해서 저장 (실행하지 않음)
-    static int ExportNativeJs(string path , string output , Runtime runtime , CommandGroups commands)
+    static int ExportNativeJs(string path , string output , Runtime runtime , CommandGroups commands , bool memory_guard = true)
     {
         if (commands.HasFlag(CommandGroups.File))
             Console.Error.WriteLine("경고: Native JS는 파일/디렉터리 명령어(file.*, directory.*)를 지원하지 않습니다.");
         string source = File.ReadAllText(path);
-        var result = NativeJsCompiler.Compile(source , new NativeJsOptions { Globals = runtime.GetGlobals() , Name = Path.GetFileName(path) });
+        var result = NativeJsCompiler.Compile(source , new NativeJsOptions { Globals = runtime.GetGlobals() , Name = Path.GetFileName(path) , MemoryGuard = memory_guard });
         if (!result.Success)
         {
             foreach (var error in result.Errors)

@@ -61,6 +61,7 @@ Options:
   --host <name,...>            (check) Names of functions/variables provided separately by the program
   --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
   --native-js [output file]    Translate to Native JS and save. (Run it with node <output file>.js)
+  --no-memory-guard            (Native JS) Leave out the code for the memory limit check. (since 0.6.0)
 ```
 A runtime error is printed as `file:line: 오류: message` and returns exit code 1. Ctrl+C stops after the running line and returns exit code 130; pressing it again exits immediately. (since 0.5.1)
 
@@ -193,11 +194,21 @@ const result = program.run({
   input: 'input\n',                        // string read by console.readline/console.read
   write: (text) => process.stdout.write(text), // if omitted, output is collected into result.output
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // functions provided by the program
+  memoryLimit: 256 * 1024 * 1024,          // memory limit (bytes, default 256MB, 0 = no limit, since 0.6.0)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 Host functions must also be named at translation time. (If they are not put in `Globals` as in the library example below, they are translated as "nonexistent functions".)
 To work with Jyuno values in host functions, use `program.runtime` (`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName`, etc.). A struct value passed to a host function is a copy; read it with `typeName`, `fieldNames` and `field('name')`.
+
+### Memory limit (since 0.6.0)
+When the heap fills up in a browser or Node.js (V8 "heap out of memory"), it cannot be caught as an exception and the whole tab or process dies. So the Native JS runtime estimates the size of the values a script holds, and stops with a `메모리 한도를 넘었습니다.` ("memory limit exceeded") error (`status: 'error'`) when it goes over `memoryLimit` (default 256MB). This works the same way as `MemoryLimit` in the Jyuno interpreter (since 1.7.0).
+
+- The runtime adds up the size of the values it creates (lists, arrays, strings, structs) and re-measures the live values every time that grows by 1MB or more (and by a multiple of the current usage). So the actual usage can go about 1MB over the limit.
+- Large arrays and strings (`array.new`, `array.range`, `mul 'text' n`, `string.padleft`, etc.) are sized before they are made, and are refused with an error if they would go over the limit. This check stays even with `--no-memory-guard`.
+- The size is an estimate. JavaScript cannot tell whether two strings are the same object, so a string used in many places is counted once per place (an overestimate). On the other hand, what V8 really uses can be up to about 2x the estimate, so leave room below the heap limit of your page or process.
+- The memory limit does not stop infinite loops or very long computations (e.g. comparing large structs). A time limit is up to the host, for example by terminating a Worker.
+- Functions that contain loops, and for loops, get code that reports their live values, so code with very many loops or function calls gets somewhat slower. If you only run trusted code, translate with `--no-memory-guard` (`NativeJsOptions.MemoryGuard = false` in the library) or run with `memoryLimit: 0`.
 
 ### Library
 ```cs

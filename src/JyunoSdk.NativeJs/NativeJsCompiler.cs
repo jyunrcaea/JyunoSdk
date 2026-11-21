@@ -13,6 +13,12 @@ public sealed class NativeJsOptions
     public IReadOnlyDictionary<string , GlobalName>? Globals { get; init; }
     /// <summary>실행할때 변수 대입을 막음 (Interpreter.BlockSubstitute)</summary>
     public bool BlockSubstitute { get; init; }
+    /// <summary>
+    /// 메모리 한도 검사 (0.6.0부터, 기본값 true). 함수 호출과 for 반복 한번마다 변수를 읽는 함수를 등록해서,
+    /// 실행할때(run의 memoryLimit) 스크립트가 붙잡고 있는 값을 재고 한도를 넘으면 V8이 프로세스/탭을 끝내기 전에 오류를 냅니다.
+    /// 끄면 조금 더 빠르지만, 큰 값 하나를 만들기 전의 확인만 합니다.
+    /// </summary>
+    public bool MemoryGuard { get; init; } = true;
     /// <summary>오류 메시지 등에 쓸 스크립트 이름</summary>
     public string Name { get; init; } = "script.jyuno";
 }

@@ -60,6 +60,7 @@ jyuno --version                버전을 출력합니다.
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
+  --no-memory-guard            (Native JS) 메모리 한도 검사를 위한 코드를 넣지 않습니다. (0.6.0부터)
 ```
 실행 중 오류는 `파일:줄: 오류: 메시지`로 출력하고 종료 코드 1을 반환합니다. Ctrl+C를 누르면 실행 중인 줄이 끝난 뒤에 멈추고 종료 코드 130을 반환하며, 한번 더 누르면 바로 끝납니다. (0.5.1부터)
 
@@ -191,11 +192,21 @@ const result = program.run({
   input: '입력\n',                         // console.readline/console.read가 읽을 문자열
   write: (text) => process.stdout.write(text), // 생략하면 result.output으로 모아서 돌려줌
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // 프로그램이 제공하는 함수
+  memoryLimit: 256 * 1024 * 1024,          // 메모리 한도 (바이트, 기본 256MB, 0은 제한 없음, 0.6.0부터)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 호스트 함수는 변환할 때도 그 이름을 알려줘야 합니다. (아래 라이브러리 예처럼 `Globals`에 넣지 않으면 "존재하지 않는 함수"로 변환됩니다)
 호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName` 등)을 사용합니다. 호스트 함수가 받은 구조체 값은 복사본이며, `typeName`, `fieldNames`, `field('이름')`으로 읽을수 있습니다.
+
+### 메모리 한도 (0.6.0부터)
+브라우저나 Node.js에서 힙이 가득 차면(V8의 heap out of memory) 예외로 잡을수 없고 탭이나 프로세스가 통째로 죽습니다. 그래서 Native JS 런타임은 스크립트가 붙잡고 있는 값의 크기를 직접 어림하고, `memoryLimit`(기본 256MB)을 넘으면 `메모리 한도를 넘었습니다.` 오류(`status: 'error'`)로 멈춥니다. Jyuno 인터프리터의 `MemoryLimit`(1.7.0부터)과 같은 방식입니다.
+
+- 런타임이 만든 값(리스트, 배열, 문자열, 구조체)의 크기를 더해 두었다가, 1MB 이상(그리고 지금 쓰는 양의 몇 배) 늘어날 때마다 살아 있는 값을 다시 잽니다. 그래서 실제로는 한도를 약 1MB 정도 넘을수 있습니다.
+- 큰 배열이나 문자열(`array.new`, `array.range`, `mul '문자열' n`, `string.padleft` 등)은 만들기 전에 크기를 계산해서, 한도를 넘는다면 만들지 않고 오류를 냅니다. 이 확인은 `--no-memory-guard`로 변환해도 남아 있습니다.
+- 크기는 어림값입니다. JavaScript는 같은 문자열인지 구별할수 없어서 같은 문자열을 여러 곳에서 쓰면 그만큼 여러번 셉니다(실제보다 크게 잼). 반대로 V8이 실제로 쓰는 양은 어림값의 최대 2배쯤 될수 있으니, 페이지나 프로세스의 힙 한도에 여유를 두고 정해 주세요.
+- 메모리 한도는 무한 반복이나 아주 오래 걸리는 계산(예: 큰 구조체끼리의 비교)을 멈추지 않습니다. 시간 제한은 Worker를 끝내는 등 호스트가 맡아야 합니다.
+- 반복문이 있는 함수와 for 문에 살아 있는 값을 알려주는 코드가 들어가서, 반복문이나 함수 호출이 아주 많은 코드는 조금 느려집니다. 신뢰하는 코드만 실행한다면 `--no-memory-guard`(라이브러리는 `NativeJsOptions.MemoryGuard = false`)로 변환하거나 `memoryLimit: 0`으로 실행하세요.
 
 ### 라이브러리
 ```cs
