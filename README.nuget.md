@@ -61,6 +61,7 @@ Options:
   --host <name,...>            (check) Names of functions/variables provided separately by the program
   --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
   --native-js [output file]    Translate to Native JS and save. (Run it with node <output file>.js)
+  --no-memory-guard            (Native JS) Leave out the code for the memory limit check. (since 0.6.0)
 ```
 A runtime error is printed as `file:line: 오류: message` and returns exit code 1. Ctrl+C stops after the running line and returns exit code 130; pressing it again exits immediately. (since 0.5.1)
 
@@ -105,7 +106,7 @@ If the program that runs the script adds its own functions, pass them with `--ho
 `jyuno lsp` speaks the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) over standard I/O. (Trailing arguments such as `--stdio` are ignored.)
 
 ### Features
-- **Diagnostics**: syntax errors (unclosed strings/parentheses, unmatched end/endfunc, else/break/param placement, func/param/for/local format, operator expressions), undefined names, functions passed as arguments without parentheses, ignored operators/tokens, `goto` jumping into or out of a function, etc.
+- **Diagnostics**: syntax errors (unclosed strings/parentheses, unmatched end/endfunc/endttl/tried, else/catch/break/param placement, func/param/for/local format, operator expressions), undefined names, functions passed as arguments without parentheses, ignored operators/tokens, `goto` jumping into or out of a function, etc.
 - **Completion**: keywords, block snippets (`if … end`, `func … endfunc`, etc.), variables/functions/parameters visible at the current position, built-in commands (with descriptions)
 - **Hover**: built-in command descriptions, user function signatures, variable kinds (local/parameter/label/constant, etc.), operators (`+`, `&&`, `+=`, etc.)
 - **Signature help**: arguments of built-in and user functions
@@ -144,7 +145,7 @@ vim.lsp.enable('jyuno')
 | Code | Severity | Description |
 | --- | --- | --- |
 | JY1001 | Error | Tokenization error (unclosed string, integer out of long range) |
-| JY1002 | Error | Block structure error (end/endfunc/endstruct pairs, else, break, param placement) |
+| JY1002 | Error | Block structure error (end/endfunc/endstruct/endttl/tried pairs, else, catch, break, param placement, placement of a bare throw) |
 | JY1003 | Error | Unclosed parenthesis |
 | JY1004 | Error | Keyword format error (func/struct/param/for/local) |
 | JY1005 | Error | Keyword used somewhere other than the start of a line |
@@ -154,7 +155,7 @@ vim.lsp.enable('jyuno')
 | JY2001 | Warning | Undefined function/variable |
 | JY2002 | Warning | Function passed as an argument without parentheses (its value can't be read) |
 | JY2003 | Warning | Token that is ignored and never run |
-| JY2004 | Warning/Error | Missing or more than one value for if/while/repeat/goto/return |
+| JY2004 | Warning/Error | Missing or more than one value for if/while/repeat/goto/return/ttl/throw |
 | JY2005 | Warning | Command group not provided by the configured program (e.g. file) |
 
 ## Native JS
@@ -164,6 +165,7 @@ Translates Jyuno code to JavaScript. The generated file contains the Jyuno runti
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
 Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
+Since 0.6.0, JyunoSdk uses Jyuno 1.7.0. The analyzer, language server and interactive prompt understand time-limit blocks (`ttl` ~ `endttl`) and exception handling (`try` / `catch` / `tried`, `throw`), but Native JS doesn't translate them yet and reports an error.
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js
@@ -181,6 +183,8 @@ Because variables and functions are translated into fixed slots and called direc
 | Block structure errors (an unmatched end, etc.) are reported before running | |
 | A struct (`struct`) can't be defined inside another struct's constructor | `struct b` inside `struct a` |
 | Member names of a variable holding a struct value (`p.x`, `p.show`) can't be redefined with `func`/`local`/`param`/`struct` (run-time error) | `func p.show` after `p = point 1 2` |
+| Time-limit blocks (`ttl`, Jyuno 1.7.0) are not supported yet | `ttl 5` |
+| Exception handling (`try`/`catch`/`tried`, `throw`, Jyuno 1.7.0) is not supported yet | `try`, `throw 'x'` |
 
 Assigning a value to a variable provided by the program (such as `console.title`) is allowed. If a computed goto target is inside a block, a `Native JS 제약` (Native JS restriction) error is raised at run time.
 The `file.*` and `directory.*` commands are not supported.
@@ -193,11 +197,21 @@ const result = program.run({
   input: 'input\n',                        // string read by console.readline/console.read
   write: (text) => process.stdout.write(text), // if omitted, output is collected into result.output
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // functions provided by the program
+  memoryLimit: 256 * 1024 * 1024,          // memory limit (bytes, default 256MB, 0 = no limit, since 0.6.0)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 Host functions must also be named at translation time. (If they are not put in `Globals` as in the library example below, they are translated as "nonexistent functions".)
 To work with Jyuno values in host functions, use `program.runtime` (`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName`, etc.). A struct value passed to a host function is a copy; read it with `typeName`, `fieldNames` and `field('name')`.
+
+### Memory limit (since 0.6.0)
+When the heap fills up in a browser or Node.js (V8 "heap out of memory"), it cannot be caught as an exception and the whole tab or process dies. So the Native JS runtime estimates the size of the values a script holds, and stops with a `메모리 한도를 넘었습니다.` ("memory limit exceeded") error (`status: 'error'`) when it goes over `memoryLimit` (default 256MB). This works the same way as `MemoryLimit` in the Jyuno interpreter (since 1.7.0).
+
+- The runtime adds up the size of the values it creates (lists, arrays, strings, structs) and re-measures the live values every time that grows by 1MB or more (and by a multiple of the current usage). So the actual usage can go about 1MB over the limit.
+- Large arrays and strings (`array.new`, `array.range`, `mul 'text' n`, `string.padleft`, etc.) are sized before they are made, and are refused with an error if they would go over the limit. This check stays even with `--no-memory-guard`.
+- The size is an estimate. JavaScript cannot tell whether two strings are the same object, so a string used in many places is counted once per place (an overestimate). On the other hand, what V8 really uses can be up to about 2x the estimate, so leave room below the heap limit of your page or process.
+- The memory limit does not stop infinite loops or very long computations (e.g. comparing large structs). A time limit is up to the host, for example by terminating a Worker.
+- Functions that contain loops, and for loops, get code that reports their live values, so code with very many loops or function calls gets somewhat slower. If you only run trusted code, translate with `--no-memory-guard` (`NativeJsOptions.MemoryGuard = false` in the library) or run with `memoryLimit: 0`.
 
 ### Library
 ```cs

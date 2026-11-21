@@ -146,7 +146,7 @@ public sealed partial class JyunoLanguageServer
                     continue;
                 add(keyword.Name , CompletionKeyword , "키워드" , keyword.ToMarkdown() , "2");
                 if (snippet_support && keyword.Snippet is string snippet)
-                    add(keyword.Name + " … " + (keyword.Type switch { KeywordType.Func => "endfunc" , KeywordType.Struct => "endstruct" , _ => "end" }) , CompletionSnippet , "블록" , keyword.ToMarkdown() , "2" , snippet);
+                    add(keyword.Name + " … " + (keyword.Type switch { KeywordType.Func => "endfunc" , KeywordType.Struct => "endstruct" , KeywordType.Ttl => "endttl" , KeywordType.Try => "tried" , _ => "end" }) , CompletionSnippet , "블록" , keyword.ToMarkdown() , "2" , snippet);
             }
         }
         foreach (var symbol in document.VisibleSymbols(line_index))
@@ -480,10 +480,12 @@ public sealed partial class JyunoLanguageServer
         foreach (var block in document.Blocks)
         {
             int last = block.IsClosed ? block.CloseLine - 1 : block.EndLine;
-            if (block.ElseLine >= 0)
+            //if의 else, try의 catch에서 나눠서 접음
+            int middle = block.ElseLine >= 0 ? block.ElseLine : block.CatchLine;
+            if (middle >= 0)
             {
-                add(block.OpenLine , block.ElseLine - 1);
-                add(block.ElseLine , last);
+                add(block.OpenLine , middle - 1);
+                add(middle , last);
             }
             else
                 add(block.OpenLine , last);

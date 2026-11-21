@@ -120,13 +120,15 @@ public sealed class Repl
                 case KeywordType.For:
                 case KeywordType.Func:
                 case KeywordType.Struct:
+                case KeywordType.Ttl:
+                case KeywordType.Try:
                     block.Add(line);
                     if (IsComplete(block))
                         ExecuteBlock();
                     else if (!hinted)
                     {
                         hinted = true;
-                        WriteLine("(블록을 end/endfunc/endstruct로 닫으면 실행됩니다. 취소하려면 .cancel)" , ConsoleColor.DarkGray);
+                        WriteLine("(블록을 end/endfunc/endstruct/endttl/tried로 닫으면 실행됩니다. 취소하려면 .cancel)" , ConsoleColor.DarkGray);
                     }
                     return;
                 case KeywordType.Goto:

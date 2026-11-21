@@ -60,6 +60,7 @@ jyuno --version                버전을 출력합니다.
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
+  --no-memory-guard            (Native JS) 메모리 한도 검사를 위한 코드를 넣지 않습니다. (0.6.0부터)
 ```
 실행 중 오류는 `파일:줄: 오류: 메시지`로 출력하고 종료 코드 1을 반환합니다. Ctrl+C를 누르면 실행 중인 줄이 끝난 뒤에 멈추고 종료 코드 130을 반환하며, 한번 더 누르면 바로 끝납니다. (0.5.1부터)
 
@@ -103,7 +104,7 @@ palindrome.jyuno:6:21: warning JY2001: 'text.at'은/는 정의되지 않은 함�
 `jyuno lsp`는 표준 입출력으로 [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)을 주고받습니다. (`--stdio` 등 뒤에 붙는 인자는 무시합니다)
 
 ### 제공하는 기능
-- **진단**: 문법 오류(닫히지 않은 문자열/괄호, end/endfunc 짝, else/break/param 위치, func/param/for/local 형식, 연산자 식), 정의되지 않은 이름, 괄호 없이 인자로 넘긴 함수, 무시되는 연산자/토큰, `goto`로 함수 안팎 이동 등
+- **진단**: 문법 오류(닫히지 않은 문자열/괄호, end/endfunc/endttl/tried 짝, else/catch/break/param 위치, func/param/for/local 형식, 연산자 식), 정의되지 않은 이름, 괄호 없이 인자로 넘긴 함수, 무시되는 연산자/토큰, `goto`로 함수 안팎 이동 등
 - **자동 완성**: 키워드, 블록 스니펫(`if … end`, `func … endfunc` 등), 지금 위치에서 보이는 변수/함수/파라미터, 내장 명령어(설명 포함)
 - **hover**: 내장 명령어 설명, 사용자 함수 시그니처, 변수 종류(지역/파라미터/레이블/상수 등), 연산자(`+`, `&&`, `+=` 등) 설명
 - **시그니처 도움말**: 내장 함수와 사용자 함수의 인자
@@ -142,7 +143,7 @@ vim.lsp.enable('jyuno')
 | 코드 | 심각도 | 설명 |
 | --- | --- | --- |
 | JY1001 | 오류 | 토큰화 오류 (닫히지 않은 문자열, long 범위를 넘는 정수) |
-| JY1002 | 오류 | 블록 구조 오류 (end/endfunc/endstruct 짝, else, break, param 위치) |
+| JY1002 | 오류 | 블록 구조 오류 (end/endfunc/endstruct/endttl/tried 짝, else, catch, break, param 위치, 값 없는 throw 위치) |
 | JY1003 | 오류 | 닫히지 않은 괄호 |
 | JY1004 | 오류 | 키워드 형식 오류 (func/struct/param/for/local) |
 | JY1005 | 오류 | 줄 맨 앞이 아닌 곳에 쓴 키워드 |
@@ -152,7 +153,7 @@ vim.lsp.enable('jyuno')
 | JY2001 | 경고 | 정의되지 않은 함수/변수 |
 | JY2002 | 경고 | 함수를 괄호 없이 인자로 넘김 (값을 읽을수 없음) |
 | JY2003 | 경고 | 실행되지 않고 무시되는 토큰 |
-| JY2004 | 경고/오류 | if/while/repeat/goto/return의 값이 없거나 둘 이상 |
+| JY2004 | 경고/오류 | if/while/repeat/goto/return/ttl/throw의 값이 없거나 둘 이상 |
 | JY2005 | 경고 | 설정된 프로그램이 제공하지 않는 명령어 묶음 (예: file) |
 
 ## Native JS
@@ -162,6 +163,7 @@ Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno �
 인터프리터와 같은 결과(출력, 반환값, 오류 메시지와 줄)를 내도록 차등 테스트로 검증했고, 반복문이나 함수 호출이 많은 코드에서 훨씬 빠릅니다.
 0.5.0부터 Jyuno 1.6.0의 연산자(`+`, `==`, `&&`, `?:`, `x += 1` 등)와 구조체의 연산자 함수(`func +`)도 변환합니다. `&&`, `||`, `??`, `?:`는 인터프리터처럼 필요한 쪽만 계산합니다.
 0.5.1부터 Jyuno 1.6.2의 동작(배열/리스트의 `[1, 2]` 문자열, 사칙연산 오류 메시지, 필드 이름으로 하는 구조체 비교, 문자열을 돌려주는 `console.read`)을 따릅니다.
+0.6.0부터 Jyuno 1.7.0을 사용합니다. 분석기, 언어 서버, 대화형 프롬프트는 시간 제한 블록(`ttl` ~ `endttl`)과 예외 처리(`try` / `catch` / `tried`, `throw`)를 알지만, Native JS 변환은 아직 지원하지 않고 오류로 알려줍니다.
 ```
 jyuno hello.jyuno --native-js          # hello.js 생성
 jyuno hello.jyuno --native-js out.js   # out.js 생성
@@ -179,6 +181,8 @@ node hello.js                          # 표준 입출력으로 실행
 | 블록 구조 오류(짝이 없는 end 등)는 실행 전에 알려줌 | |
 | 구조체(`struct`) 생성자 안에서 다른 구조체를 정의할수 없음 | `struct a` 안의 `struct b` |
 | 구조체 값을 담은 변수의 멤버 이름(`p.x`, `p.show`)을 `func`/`local`/`param`/`struct`로 다시 정의할수 없음 (실행 중 오류) | `p = point 1 2` 다음의 `func p.show` |
+| 시간 제한 블록(`ttl`, Jyuno 1.7.0)은 아직 쓸수 없음 | `ttl 5` |
+| 예외 처리(`try`/`catch`/`tried`, `throw`, Jyuno 1.7.0)는 아직 쓸수 없음 | `try`, `throw 'x'` |
 
 프로그램이 제공하는 변수(`console.title` 등)에 값을 대입하는건 허용됩니다. 계산된 goto 대상이 블록 안쪽이라면 실행 중에 `Native JS 제약` 오류가 납니다.
 `file.*`, `directory.*` 명령어는 지원하지 않습니다.
@@ -191,11 +195,21 @@ const result = program.run({
   input: '입력\n',                         // console.readline/console.read가 읽을 문자열
   write: (text) => process.stdout.write(text), // 생략하면 result.output으로 모아서 돌려줌
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // 프로그램이 제공하는 함수
+  memoryLimit: 256 * 1024 * 1024,          // 메모리 한도 (바이트, 기본 256MB, 0은 제한 없음, 0.6.0부터)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 ```
 호스트 함수는 변환할 때도 그 이름을 알려줘야 합니다. (아래 라이브러리 예처럼 `Globals`에 넣지 않으면 "존재하지 않는 함수"로 변환됩니다)
 호스트 함수에서 Jyuno 값을 다룰때는 `program.runtime`(`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName` 등)을 사용합니다. 호스트 함수가 받은 구조체 값은 복사본이며, `typeName`, `fieldNames`, `field('이름')`으로 읽을수 있습니다.
+
+### 메모리 한도 (0.6.0부터)
+브라우저나 Node.js에서 힙이 가득 차면(V8의 heap out of memory) 예외로 잡을수 없고 탭이나 프로세스가 통째로 죽습니다. 그래서 Native JS 런타임은 스크립트가 붙잡고 있는 값의 크기를 직접 어림하고, `memoryLimit`(기본 256MB)을 넘으면 `메모리 한도를 넘었습니다.` 오류(`status: 'error'`)로 멈춥니다. Jyuno 인터프리터의 `MemoryLimit`(1.7.0부터)과 같은 방식입니다.
+
+- 런타임이 만든 값(리스트, 배열, 문자열, 구조체)의 크기를 더해 두었다가, 1MB 이상(그리고 지금 쓰는 양의 몇 배) 늘어날 때마다 살아 있는 값을 다시 잽니다. 그래서 실제로는 한도를 약 1MB 정도 넘을수 있습니다.
+- 큰 배열이나 문자열(`array.new`, `array.range`, `mul '문자열' n`, `string.padleft` 등)은 만들기 전에 크기를 계산해서, 한도를 넘는다면 만들지 않고 오류를 냅니다. 이 확인은 `--no-memory-guard`로 변환해도 남아 있습니다.
+- 크기는 어림값입니다. JavaScript는 같은 문자열인지 구별할수 없어서 같은 문자열을 여러 곳에서 쓰면 그만큼 여러번 셉니다(실제보다 크게 잼). 반대로 V8이 실제로 쓰는 양은 어림값의 최대 2배쯤 될수 있으니, 페이지나 프로세스의 힙 한도에 여유를 두고 정해 주세요.
+- 메모리 한도는 무한 반복이나 아주 오래 걸리는 계산(예: 큰 구조체끼리의 비교)을 멈추지 않습니다. 시간 제한은 Worker를 끝내는 등 호스트가 맡아야 합니다.
+- 반복문이 있는 함수와 for 문에 살아 있는 값을 알려주는 코드가 들어가서, 반복문이나 함수 호출이 아주 많은 코드는 조금 느려집니다. 신뢰하는 코드만 실행한다면 `--no-memory-guard`(라이브러리는 `NativeJsOptions.MemoryGuard = false`)로 변환하거나 `memoryLimit: 0`으로 실행하세요.
 
 ### 라이브러리
 ```cs

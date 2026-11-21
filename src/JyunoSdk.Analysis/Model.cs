@@ -56,10 +56,14 @@ public enum BlockKind
     For,
     Func,
     /// <summary>struct ~ endstruct (Jyuno 1.5.0부터)</summary>
-    Struct
+    Struct,
+    /// <summary>ttl (초) ~ endttl: 시간 제한 블록 (Jyuno 1.7.0부터, 새 영역을 만들지 않음)</summary>
+    Ttl,
+    /// <summary>try ~ catch (이름) ~ tried: 예외 처리 (Jyuno 1.7.0부터, 새 영역을 만들지 않음)</summary>
+    Try
 }
 
-/// <summary>if/while/repeat/for ... end, func ... endfunc 또는 struct ... endstruct 블록</summary>
+/// <summary>if/while/repeat/for ... end, func ... endfunc, struct ... endstruct, ttl ... endttl 또는 try ... catch ... tried 블록</summary>
 public sealed class Block
 {
     internal Block(BlockKind kind , int open , Block? parent)
@@ -72,7 +76,9 @@ public sealed class Block
     public int OpenLine { get; }
     /// <summary>if 블록의 else 줄 (없다면 -1)</summary>
     public int ElseLine { get; internal set; } = -1;
-    /// <summary>블록을 닫는 end/endfunc/endstruct 줄 (닫히지 않았다면 -1)</summary>
+    /// <summary>try 블록의 catch 줄 (없다면 -1, Jyuno 1.7.0부터)</summary>
+    public int CatchLine { get; internal set; } = -1;
+    /// <summary>블록을 닫는 end/endfunc/endstruct/endttl/tried 줄 (닫히지 않았다면 -1)</summary>
     public int CloseLine { get; internal set; } = -1;
     /// <summary>블록에 속하는 마지막 줄 (닫혔다면 CloseLine, 아니라면 블록이 끝나는 것으로 보는 줄)</summary>
     public int EndLine { get; internal set; }

@@ -229,6 +229,8 @@ sealed class Emitter
     sealed class Fn
     {
         public int Temps;
+        //메모리 한도: 지금 만들고 있는 코드를 감싼 for 문의 수 (반복 한번의 변수 읽기 함수를 $roots[$rk + 이 수]에 둠)
+        public int Fors;
         public string? Self;
         //지금 만들고 있는 코드를 감싼 반복문의 수 (다시 실행될수 있는 param을 구별)
         public int Loops;
@@ -906,14 +908,15 @@ sealed class Emitter
                         set_status(cx , cx.Scope , name , 'M');
                 State head = cx.St.Clone();
                 string label = $"$L{s.Line}";
+                string release = options.MemoryGuard ? release_temps : "";
                 if (loop.Kind is StatementKind.While)
-                    emit($"{label}: while ({condition(cx , loop.Arguments)}) {{" , s.Line);
+                    emit($"{label}: while ({condition(cx , loop.Arguments)}) {{{release}" , s.Line);
                 else
                 {
                     string n = $"$n{s.Line}";
                     var a = gen_args(cx , loop.Arguments);
                     string count = a.Count is 1 ? $"$rc1({a[0]})" : $"repeatCount([{string.Join(", " , a)}])";
-                    emit($"{{ let {n} = {count}; {label}: for (; {n} > 0; {n}--) {{" , s.Line);
+                    emit($"{{ let {n} = {count}; {label}: for (; {n} > 0; {n}--) {{{release}" , s.Line);
                 }
                 State after_head = cx.St.Clone();
                 cx.Fn.Loops++;
@@ -942,9 +945,19 @@ sealed class Emitter
                 Cx icx = new(inner , cx.Fn , inner_state);
                 string item = has_structs ? $"own({it}[{i}])" : $"{it}[{i}]";
                 var declarations = inner.NameOrder.Select(n => n == each.VariableName ? $"{slot(inner , n)} = {item}" : $"{slot(inner , n)} = U");
-                emit($"{{ const {it} = forItems({source}); {label}: for (let {i} = 0; {i} < {it}.length; {i}++) {{ let {string.Join(", " , declarations)};" , s.Line);
+                //메모리 한도: 반복 한번의 변수(새 영역)를 읽는 함수를 이 for 문의 자리에 등록하고, 이전 반복에서 계산 중이던 큰 값을 놓음
+                //본문에 반복문이 없다면 반복 한번의 변수에는 값이 쌓이지 않으므로(큰 값은 $temps), 순회할 원소만 한번 등록
+                bool per_iteration = options.MemoryGuard && has_repeat(each.Body);
+                string reader = $"$roots[$rk + {cx.Fn.Fors + 1}] = () => [{{0}}]; $roots.length = $rk + {cx.Fn.Fors + 2};";
+                string iteration_roots = !options.MemoryGuard ? ""
+                    : per_iteration ? " " + string.Format(reader , string.Join(", " , inner.NameOrder.Select(n => slot(inner , n)).Prepend(it))) + release_temps
+                    : release_temps;
+                string entry_roots = options.MemoryGuard && !per_iteration ? " " + string.Format(reader , it) : "";
+                emit($"{{ const {it} = forItems({source});{entry_roots} {label}: for (let {i} = 0; {i} < {it}.length; {i}++) {{ let {string.Join(", " , declarations)};{iteration_roots}" , s.Line);
                 cx.Fn.Loops++;
+                cx.Fn.Fors++;
                 gen_block(icx , each.Body);
+                cx.Fn.Fors--;
                 cx.Fn.Loops--;
                 if (each.EndTokenError is string end_error)
                     emit(grammar(each.EndLine , end_error) , each.EndLine);
@@ -1003,6 +1016,7 @@ sealed class Emitter
                 Fn fn = new();
                 Cx fcx = new(function.InnerScope , fn , st);
                 var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}");
+                bool guarded = options.MemoryGuard && has_repeat(function.Body);
                 var declarations = function.InnerScope.NameOrder.Select(n => $"{slot(function.InnerScope , n)} = U").ToList();
                 List<(string, int)>? saved = null;
                 if (method)
@@ -1010,21 +1024,24 @@ sealed class Emitter
                     saved = output;
                     output = new();
                     emit($"const $m{s.Line} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
-                    emit($"const {self_of(cx.Scope)} = this; if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(function)}" , -2);
+                    emit($"const {self_of(cx.Scope)} = this; if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(function)}" , -2);
                 }
                 else
                 {
                     emit($"{function_slot} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
-                    emit($"if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(function)}" , -2);
+                    emit($"if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(function)}" , -2);
                 }
                 int temp_at = output.Count;
                 emit("" , s.Line);
                 if (declarations.Count > 0)
                     emit($"let {string.Join(", " , declarations)};" , s.Line);
+                int root_at = output.Count;
+                emit("" , s.Line);
                 gen_block(fcx , function.Body);
-                emit("return null; } finally { $depth--; } };" , function.EndLine);
+                emit($"return null; }} finally {{ $depth--;{guard_tail(guarded)} }} }};" , function.EndLine);
                 if (fn.Temps > 0)
                     output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , s.Line);
+                output[root_at] = (guarded ? root_reader(parameters.Concat(function.InnerScope.NameOrder.Select(n => slot(function.InnerScope , n))) , fn , method ? self_of(cx.Scope) : null) : "" , s.Line);
                 if (saved is not null)
                 {
                     pending_methods.Peek().AddRange(output);
@@ -1119,6 +1136,30 @@ sealed class Emitter
     string own_parameters(FunctionStatement function)
         => has_structs ? string.Concat(Enumerable.Range(0 , function.ParameterCount).Select(i => $" $a{i} = own($a{i});")) : "";
 
+    //─────────── 메모리 한도 (0.6.0) ───────────
+    //함수 머리: 이 호출의 변수 읽기 함수를 둘 자리($rk)와, 호출 전에 계산 중이던 큰 값의 수($tf)
+    //반복문이나 goto가 없는 함수는 변수에 값이 쌓이지 않으므로(큰 값은 $temps에 남음) 등록하지 않음 (재귀 호출의 비용을 늘리지 않도록)
+    static bool has_repeat(Block block) => block.Statements.Any(s => s switch {
+        LoopStatement or ForStatement or GotoStatement => true,
+        IfStatement branch => has_repeat(branch.Then) || (branch.Else is Block other && has_repeat(other)),
+        _ => false
+    });
+    static string guard_head(bool guarded) => guarded ? " const $rk = $roots.length, $tf = $temps.length;" : "";
+    //함수가 끝나면 이 호출과 안쪽 for 문의 변수 읽기 함수를 지움 (돌려준 큰 값은 $temps에 남아서 호출한 쪽의 반복이 끝날 때 놓음)
+    static string guard_tail(bool guarded) => guarded ? " $roots.length = $rk;" : "";
+    //반복 한번이 시작될 때: 이전 반복에서 계산 중이던 큰 값을 놓음 (이 호출이 시작되기 전의 것은 그대로)
+    const string release_temps = " if ($temps.length > $tf) $temps.length = $tf;";
+    //함수/구조체 생성자/최상위 영역의 변수를 읽는 함수를 등록 (변수가 선언된 뒤라서 읽을수 있음)
+    string root_reader(IEnumerable<string> slots , Fn fn , string? self)
+    {
+        if (!options.MemoryGuard)
+            return "";
+        var values = slots.Concat(Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"));
+        if (self is not null)
+            values = values.Prepend(self);
+        return $"$roots[$rk] = () => [{string.Join(", " , values)}]; $roots.length = $rk + 1;";
+    }
+
     //struct ~ endstruct: 구조체 이름에 생성자 함수를 넣음. 구조체 함수는 생성자 밖(정의마다 한번)에 만듦
     void gen_struct(Cx cx , FunctionStatement structure)
     {
@@ -1145,14 +1186,18 @@ sealed class Emitter
         int methods_at = output.Count;
         pending_methods.Push(new());
         emit($"return function $c_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , line);
-        emit($"if ($depth >= 200) $tooDeep(); $depth++; try {{{own_parameters(structure)}" , -2);
+        bool guarded = options.MemoryGuard && has_repeat(structure.Body);
+        emit($"if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(structure)}" , -2);
         int temp_at = output.Count;
         emit("" , line);
         emit($"const {self} = new $T{inner.Id}({string.Join(", " , inner.NameOrder.Select(prop).Concat(operator_props(inner)).Select(_ => "U").Prepend("[]"))});" , line);
+        int root_at = output.Count;
+        emit("" , line);
         gen_block(fcx , structure.Body);
-        emit($"return {self}; }} finally {{ $depth--; }} }};" , structure.EndLine);
+        emit($"return {self}; }} finally {{ $depth--;{guard_tail(guarded)} }} }};" , structure.EndLine);
         if (fn.Temps > 0)
             output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , line);
+        output[root_at] = (guarded ? root_reader(parameters , fn , self) : "" , line);
         emit("})();" , structure.EndLine);
         output.InsertRange(methods_at , pending_methods.Pop());
     }
@@ -1184,16 +1229,19 @@ sealed class Emitter
         Fn top_fn = new();
         State top_state = new() { [analysis.TopScope] = fresh(analysis.TopScope , null) };
         Cx tcx = new(analysis.TopScope , top_fn , top_state);
-        emit("return function $main() {" , -1);
+        emit(options.MemoryGuard ? "return function $main() { const $rk = 0, $tf = 0;" : "return function $main() {" , -1);
         int temp_at = output.Count;
         emit("" , -1);
         var declarations = analysis.TopScope.NameOrder.Select(n => $"{slot(analysis.TopScope , n)} = U").ToList();
         if (declarations.Count > 0)
             emit($"let {string.Join(", " , declarations)};" , -1);
+        int root_at = output.Count;
+        emit("" , -1);
         gen_block(tcx , root);
         emit("return null; };" , -1);
         if (top_fn.Temps > 0)
             output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , top_fn.Temps).Select(i => $"$t{i}"))};" , -1);
+        output[root_at] = (root_reader(analysis.TopScope.NameOrder.Select(n => slot(analysis.TopScope , n)) , top_fn , null) , -1);
 
         //머리말: 런타임/호스트 연결
         List<string> head = new() {
@@ -1201,6 +1249,8 @@ sealed class Emitter
             "const { $B, $rv, $chkSet, $localSet, $call, $lget, $lset, $rc1, $grammar, $noValue, $unknownVar, $unknownCall, $notVar, $constAssign, $noSubstitute, $cannotProcess, $parenError, $badIndexArgs, $forSyntax, $forArity, $funcSyntax, $paramSyntax, $localSyntax, $localForm, $gotoMissing, $gotoFail, $tooDeep } = $X;",
             "let $depth = 0;"
         };
+        if (options.MemoryGuard)
+            head.Add("const { $roots, $temps } = $X;");
         foreach (var r in host_refs.Values)
             head.Add($"const {r.Var} = $H.{r.What}({Quote(r.Name)});");
         if (has_structs)
@@ -1244,7 +1294,7 @@ sealed class Emitter
         foreach (var (code , _) in body)
             write(code);
         write("}, {");
-        write($"  name: {Quote(name)}, lineCount: {analysis.LineCount}, blockSubstitute: {(options.BlockSubstitute ? "true" : "false")},");
+        write($"  name: {Quote(name)}, lineCount: {analysis.LineCount}, blockSubstitute: {(options.BlockSubstitute ? "true" : "false")}, memoryGuard: {(options.MemoryGuard ? "true" : "false")},");
         write($"  functions: [{string.Join(", " , analysis.Functions.Select(f => $"[{f.Line}, {f.EndLine}]"))}],");
         write($"  probe: $probe, probeLine: {probe_line}, bodyLine: {body_line},");
         write($"  lineMap: [{string.Join("," , body.Select(o => o.Item2))}],");

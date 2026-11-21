@@ -116,6 +116,32 @@ sealed class LineParser
                 }
                 break;
             }
+            case KeywordType.Ttl:
+            case KeywordType.Throw:
+            {
+                //ttl (초), throw (값): 값 하나 (Jyuno 1.7.0부터, 값이 없거나 많으면 실행할 때 오류)
+                var (arguments, end) = ParseKeywordArguments(1);
+                Ignored(end , "짝이 없는 ')' 뒤의 내용은 실행되지 않습니다.");
+                if (failed)
+                    break;
+                if (keyword is KeywordType.Ttl && arguments.Count is 0)
+                    Report(DiagnosticCodes.KeywordArguments , DiagnosticSeverity.Error , "ttl 다음에는 제한 시간(초)이 와야 합니다." , head);
+                else if (arguments.Count > 1)
+                    Report(DiagnosticCodes.KeywordArguments , DiagnosticSeverity.Error ,
+                        keyword is KeywordType.Ttl ? "ttl 다음에는 제한 시간(초) 하나만 와야 합니다." : "throw 다음에는 던질 값 하나만 와야 합니다." ,
+                        arguments[1].Start , arguments[^1].End);
+                break;
+            }
+            case KeywordType.Catch:
+                //catch (이름): 잡은 값을 일반 대입처럼 넣음 (바깥에 같은 이름의 변수가 있다면 그 변수, 없다면 지금 영역에 새로 만듦)
+                //이름이 아닌 토큰이나 두번째 이름은 블록 구조 오류로 알림
+                if (count is 2 && IsName(1))
+                    Name(1 , OccurrenceRole.Assignment);
+                break;
+            case KeywordType.Try:
+            case KeywordType.Tried:
+                //뒤에 무언가 있다면 블록 구조 오류로 알림 (Jyuno에서도 실행하기 전에 문법 오류)
+                break;
             case KeywordType.For:
             {
                 if (!IsName(1))
@@ -182,7 +208,7 @@ sealed class LineParser
                 break;
             }
             default:
-                //else, end, endfunc, endstruct, break: 뒤의 내용은 사용하지 않음
+                //else, end, endfunc, endstruct, endttl, break: 뒤의 내용은 사용하지 않음
                 Ignored(1 , $"{name} 뒤의 내용은 무시됩니다.");
                 break;
         }
