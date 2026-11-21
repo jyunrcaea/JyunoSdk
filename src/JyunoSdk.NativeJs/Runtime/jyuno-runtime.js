@@ -92,6 +92,7 @@ class GrammarSignal extends Error {
 class HostVar { constructor(get, set) { this.get = get; this.set = set; } }
 
 const MAXS = Number.MAX_SAFE_INTEGER;
+const STRING_MAX = 1 << 29; // Strings.MaxLength: mul의 반복, padleft/padright로 만들수 있는 문자열의 최대 길이
 const BMAX = 9007199254740991n;
 const LONG_MIN = -9223372036854775808n;
 
@@ -147,10 +148,6 @@ function fmtDouble(x) {
 }
 
 const ELEM_NAME = { long: 'Int64', double: 'Double', string: 'String', bool: 'Boolean', object: 'Object' };
-const ELEM_CS = { long: 'long', double: 'double', string: 'string', bool: 'bool', object: 'object' };
-function listTypeName(l) {
-  return l.fixed ? `System.${ELEM_NAME[l.e]}[]` : `System.Collections.Generic.List\`1[System.${ELEM_NAME[l.e]}]`;
-}
 
 function str(v) {
   if (typeof v === 'string') return v;
@@ -160,9 +157,16 @@ function str(v) {
   if (v === false) return 'False';
   if (v instanceof JDouble) return fmtDouble(v.v);
   if (typeof v === 'bigint') return v.toString();
-  if (v instanceof JList) return listTypeName(v);
+  if (v instanceof JList) return listText(v);
   if (v instanceof JStruct) return structText(v);
   return String(v);
+}
+// Values.Text (Jyuno 1.6.2): 배열/리스트는 [1, 2, 3], 원소의 null은 "null", 자기 자신을 담은 배열/리스트는 [...]
+const LISTING = new Set();
+function listText(l) {
+  if (LISTING.has(l)) return '[...]';
+  LISTING.add(l);
+  try { return '[' + l.a.map(show).join(', ') + ']'; } finally { LISTING.delete(l); }
 }
 // StructValue.ToString: 'person { name = Jyunni, rating = 2424 }'
 function structText(v) {
@@ -171,30 +175,6 @@ function structText(v) {
   return `${v.$name} { ${props.map((p) => { const x = v[p]; return `${v.$jn[p]} = ${show(x instanceof JConst ? x.v : x)}`; }).join(', ')} }`;
 }
 const show = (v) => (v === null ? 'null' : str(v)); // $"{v ?? "null"}"
-
-// C# 컴파일러가 쓰는 타입 이름 (dynamic 연산 오류 메시지용)
-function csType(v) {
-  if (v === null) return '<null>';
-  if (typeof v === 'number') return Number.isInteger(v) ? 'long' : 'double';
-  if (typeof v === 'bigint') return 'long';
-  if (v instanceof JDouble) return 'double';
-  if (typeof v === 'string') return 'string';
-  if (typeof v === 'boolean') return 'bool';
-  if (v instanceof JList) return v.fixed ? `${ELEM_CS[v.e]}[]` : `System.Collections.Generic.List<${ELEM_CS[v.e]}>`;
-  if (v instanceof JStruct) return 'Jyuno.Language.StructValue';
-  return 'object';
-}
-// .NET 런타임 타입 이름 (형변환 오류 메시지용)
-function netType(v) {
-  if (typeof v === 'number') return Number.isInteger(v) ? 'System.Int64' : 'System.Double';
-  if (typeof v === 'bigint') return 'System.Int64';
-  if (v instanceof JDouble) return 'System.Double';
-  if (typeof v === 'string') return 'System.String';
-  if (typeof v === 'boolean') return 'System.Boolean';
-  if (v instanceof JList) return listTypeName(v);
-  return 'System.Object';
-}
-const binderError = (op, a, b) => err(`Operator '${op}' cannot be applied to operands of type '${csType(a)}' and '${csType(b)}'`, 'RuntimeBinderException');
 
 // ───────────── 참/거짓 (Parser.IsTrue) ─────────────
 function truthy(v) {
@@ -219,18 +199,25 @@ function imul(a, b) {
   if (typeof a === 'number' && typeof b === 'number') { const r = a * b; if (r <= MAXS && r >= -MAXS) return r + 0; }
   return big2(BigInt(a) * BigInt(b));
 }
-const overflow = () => err('Arithmetic operation resulted in an overflow.', 'OverflowException');
-function idiv(a, b) { // b != 0
+function idiv(a, b) {
+  if (b == 0) throw err('0으로 나눌수 없습니다.'); // eslint-disable-line eqeqeq
   if (typeof a === 'number' && typeof b === 'number') return (a - a % b) / b + 0;
   a = BigInt(a); b = BigInt(b);
-  if (a === LONG_MIN && b === -1n) throw overflow();
+  // long.MinValue / -1은 long으로 나타낼수 없음 (Values.arithmetic, Jyuno 1.6.2)
+  if (a === LONG_MIN && b === -1n) throw err(`정수 나눗셈의 결과가 정수의 범위를 벗어났습니다. (${a} / ${b})`);
   return big2(a / b);
 }
 function imod(a, b) {
+  if (b == 0) throw err('0으로 나눌수 없습니다.'); // eslint-disable-line eqeqeq
   if (typeof a === 'number' && typeof b === 'number') return (a % b) + 0;
   a = BigInt(a); b = BigInt(b);
-  if (a === LONG_MIN && b === -1n) throw overflow();
+  if (a === LONG_MIN && b === -1n) return 0;
   return big2(a % b);
+}
+// Values.arithmetic (Jyuno 1.6.2): 숫자가 아닌 값의 사칙연산은 Jyuno 오류 (null은 nullError)
+function arithError(op, a, b) {
+  if (a === null || b === null) return nullError();
+  return err(`'${op}' 연산은 숫자끼리만 할수 있습니다. ('${show(a)}' ${op} '${show(b)}')`);
 }
 
 // Values.Add / Multiply / Divide / Modulo (+ dynamic으로 계산하던 나머지 경우)
@@ -243,11 +230,8 @@ function vadd(a, b) {
   if (ia !== undefined && ib !== undefined) return iadd(ia, ib);
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return D(ra + rb);
-  // dynamic: null과 숫자의 덧셈은 null (lifted 연산), 그 외는 오류
-  if (a === null && b === null) throw err(`Operator '+=' is ambiguous on operands of type '<null>' and '<null>'`, 'RuntimeBinderException');
-  if ((a === null && rb !== undefined) || (b === null && ra !== undefined)) return null;
   if (typeof a === 'string' || typeof b === 'string') return str(a) + str(b);
-  throw binderError('+=', a, b);
+  throw arithError('+', a, b);
 }
 function vmul(a, b) {
   if (typeof a === 'number' && typeof b === 'number') {
@@ -258,21 +242,21 @@ function vmul(a, b) {
   if (ia !== undefined && ib !== undefined) return imul(ia, ib);
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return D(ra * rb);
-  throw binderError('*=', a, b);
+  throw arithError('*', a, b);
 }
 function vdiv(a, b) {
   const ia = tryInt(a), ib = tryInt(b);
   if (ia !== undefined && ib !== undefined) return idiv(ia, ib);
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return D(ra / rb);
-  throw binderError('/', a, b);
+  throw arithError('/', a, b);
 }
 function vmod(a, b) {
   const ia = tryInt(a), ib = tryInt(b);
   if (ia !== undefined && ib !== undefined) return imod(ia, ib);
   const ra = tryReal(a), rb = tryReal(b);
   if (ra !== undefined && rb !== undefined) return D(ra % rb);
-  throw binderError('%', a, b);
+  throw arithError('%', a, b);
 }
 
 // Values.Same (equal). 구조체 값끼리 비교는 sameS (구조체가 없는 프로그램의 equal2는 이전과 같은 코드)
@@ -292,30 +276,36 @@ function same(a, b) {
   if (ra !== undefined && rb !== undefined) return ra === rb;
   return false; // object.Equals: 문자열/논리형은 위의 a === b, 컬렉션은 참조 비교
 }
-// StructInstance.Equals: 같은 struct 줄에서 만들었고(같은 클래스), 필드 이름(순서 포함)과 값이 모두 같음 (배열/리스트 필드는 원소끼리)
-// 클래스마다 생성 코드가 $same(b)를 만듦: sameOrder로 이름 순서를 비교한 뒤 필드마다 fieldSame
-function sameOrder(a, b) {
-  const oa = a.$o, ob = b.$o;
-  if (oa === ob) return true; // 복사본끼리는 순서 배열을 공유
-  if (oa.length === ob.length) {
-    let i = 0;
-    while (i < oa.length && oa[i] === ob[i]) i++;
-    if (i === oa.length) return true; // 만든 순서가 같음 (필드/함수 종류가 다르면 fieldSame이 false)
+// StructInstance.Equals: 같은 struct 줄에서 만들었고(같은 클래스), 필드 이름이 모두 같고, 이름이 같은 필드의 값이 모두 같음 (배열/리스트 필드는 원소끼리)
+// Jyuno 1.6.2부터 필드를 만든 순서는 상관없고, 값은 왼쪽 값의 필드 순서대로 비교 (다시 정의한 ==가 불리는 순서)
+function sameFields(a, b) {
+  const oa = a.$o;
+  if (oa !== b.$o) { // 복사본끼리는 순서 배열을 공유하므로 이름이 같음
+    const pa = a.fieldProps();
+    if (pa.length !== b.fieldProps().length) return false;
+    for (const p of pa) { const y = b[p]; if (y === U || typeof y === 'function') return false; }
   }
-  const pa = a.fieldProps(), pb = b.fieldProps();
-  if (pa.length !== pb.length) return false;
-  for (let i = 0; i < pa.length; i++) if (pa[i] !== pb[i]) return false;
+  for (const p of oa) {
+    const x = a[p];
+    if (x === U || typeof x === 'function') continue;
+    if (!fieldSame(x, b[p])) return false;
+  }
   return true;
 }
+// 지금 비교하고 있는 배열/리스트 쌍 (자기 자신을 담은 리스트는 이미 비교하고 있는 쌍이라면 같다고 봄, Jyuno 1.6.2)
+const COMPARING = [];
 function fieldSame(x, y) {
-  if (typeof x === 'function' && typeof y === 'function') return true; // 구조체 함수는 필드가 아님
   if (x instanceof JConst) x = x.v;
   if (y instanceof JConst) y = y.v;
   if (x instanceof JList && y instanceof JList) {
     if (x === y) return true;
     if (x.a.length !== y.a.length) return false;
-    for (let i = 0; i < x.a.length; i++) if (!fieldSame(x.a[i], y.a[i])) return false;
-    return true;
+    for (let k = 0; k < COMPARING.length; k += 2) if (COMPARING[k] === x && COMPARING[k + 1] === y) return true;
+    COMPARING.push(x, y);
+    try {
+      for (let i = 0; i < x.a.length; i++) if (!fieldSame(x.a[i], y.a[i])) return false;
+      return true;
+    } finally { COMPARING.length -= 2; }
   }
   return sameS(x, y);
 }
@@ -585,10 +575,9 @@ function repeatString(s, count) {
   if (count === null) throw nullError();
   const n = tryInt(count);
   if (n === undefined) throw err('문자열을 반복할 횟수는 정수여야 합니다.');
-  if (n <= 0) return '';
-  const k = Number(n > 2147483647 ? 2147483647 : n);
-  if (s.length * k > 1 << 29) throw err('Insufficient memory to continue the execution of the program.', 'OutOfMemoryException');
-  return s.repeat(k);
+  if (n <= 0 || s.length === 0) return '';
+  if (n > Math.floor(STRING_MAX / s.length)) throw err('반복한 문자열이 너무 깁니다. (최대 536,870,912자)');
+  return s.repeat(Number(n));
 }
 
 // ───────────── 인자 개수가 정해진 빠른 경로 (이름이 내장 함수로 고정된 호출 자리에서 사용) ─────────────
@@ -612,9 +601,8 @@ function sub2(a, b) {
   if (a instanceof JList) return colSub(a, b);
   if (typeof a === 'string') {
     if (b === null) throw nullError();
-    if (typeof b !== 'string') throw err(`Unable to cast object of type '${netType(b)}' to type 'System.String'.`, 'InvalidCastException');
-    if (b === '') throw err("The value cannot be an empty string. (Parameter 'oldValue')", 'ArgumentException');
-    return a.split(b).join('');
+    if (typeof b !== 'string') throw err(`문자열에서 뺄 값은 문자열이어야 합니다. ('${show(b)}')`);
+    return b === '' ? a : a.split(b).join('');
   }
   const ia = tryInt(a), ib = tryInt(b);
   if (ia !== undefined && ib !== undefined) return isub(ia, ib);
@@ -839,10 +827,10 @@ const mathFunctions = {
     if (typeof v === 'number') return Number.isInteger(v) ? Math.abs(v) : Math.abs(v);
     if (v instanceof JDouble) return new JDouble(Math.abs(v.v));
     if (typeof v === 'bigint') {
-      if (v === LONG_MIN) throw err('Negating the minimum value of a twos complement number is invalid.', 'OverflowException');
+      if (v === LONG_MIN) throw err(`'${show(v)}'의 절댓값은 정수의 범위를 벗어납니다.`);
       return big2(v < 0n ? -v : v);
     }
-    throw err("The best overloaded method match for 'System.Math.Abs(short)' has some invalid arguments", 'RuntimeBinderException');
+    throw err(`'${show(v)}'은/는 숫자가 아니므로 절댓값을 구할수 없습니다.`);
   },
 };
 const mathConstants = { 'math.pi': Math.PI, 'math.nan': NaN, 'math.tau': 2 * Math.PI };
@@ -1197,7 +1185,7 @@ function addStringBuiltins() {
   const pad = (left) => (args, name) => {
     need(args, 2, name);
     const s = text(args, 0, name);
-    const width = intArg(args[1], '길이', 0, MAX_LENGTH, name);
+    const width = intArg(args[1], '길이', 0, STRING_MAX, name);
     let fill = ' ';
     if (args.length > 2) {
       const c = text(args, 2, name);
@@ -1415,8 +1403,9 @@ function fixedOf(x, p, grouping) {
   if (grouping) { const [a, b] = s.split('.'); s = group(a) + (b !== undefined ? '.' + b : ''); }
   return (x < 0 && /[1-9]/.test(s) ? '-' : '') + s;
 }
+// Strings.Format: console.write/writeline의 형식 문자열 (첫번째 인자도 {0})
 function formatArgs(args) {
-  if (typeof args[0] !== 'string') throw err('형식 문자열은 문자열이어야 합니다.');
+  if (typeof args[0] !== 'string') throw err(`형식 문자열은 문자열이어야 합니다. ('${show(args[0])}')`);
   try { return composite(args[0], args); } catch (e) {
     if (e instanceof FormatError) throw err(`형식 문자열이 올바르지 않습니다: "${args[0]}"`);
     throw e;
@@ -1462,15 +1451,20 @@ class StringReader {
 }
 const textOf = (v) => (v === null ? null : str(v));
 function addConsole(host, io) {
-  host.set('console.write', { kind: 'func', fn: (a) => { if (a.length === 0) return null; io.write(a.length === 1 ? textOf(a[0]) ?? 'null' : formatArgs(a)); return null; } });
+  host.set('console.write', { kind: 'func', fn: (a) => {
+    if (a.length === 0) return null;
+    if (a.length === 1) io.write(textOf(a[0]) ?? 'null');
+    else io.write(formatArgs(a[0] === null ? ['null', ...a.slice(1)] : a));
+    return null;
+  } });
   host.set('console.writeline', { kind: 'func', fn: (a) => {
     if (a.length === 0) io.write('\n');
     else if (a.length === 1) io.write((textOf(a[0]) ?? '') + '\n');
-    else io.write(formatArgs(a) + '\n');
+    else { if (a[0] === null) throw nullError(); io.write(formatArgs(a) + '\n'); }
     return null;
   } });
   host.set('console.readline', { kind: 'func', fn: () => io.readLine() });
-  host.set('console.read', { kind: 'func', fn: () => { const c = io.read(); return String.fromCharCode(c < 0 ? 0xffff : c); } });
+  host.set('console.read', { kind: 'func', fn: () => { const c = io.read(); return c < 0 ? null : String.fromCharCode(c); } }); // 입력이 끝났다면 null (Jyuno 1.6.2)
   host.set('console.clear', { kind: 'func', fn: () => { io.clear(); return null; } });
   let title = 'Jyuno';
   host.set('console.title', { kind: 'var', get: () => title, set: (v) => { const t = textOf(v); if (t === null) throw nullError(); title = t; io.title(t); } });

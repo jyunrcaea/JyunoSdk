@@ -263,6 +263,36 @@ public class LanguageServerTests
         Assert.Equal("(f)" , change["newText"]!.GetValue<string>());
     }
 
+    //빠른 수정 요청의 범위가 줄보다 길면 내부 오류 대신 빈 목록 (0.5.1)
+    [Fact]
+    public void QuickFixIgnoresOutOfRangeDiagnostics()
+    {
+        var request = Doc("textDocument/codeAction" , new JsonObject {
+            ["range"] = new JsonObject { ["start"] = new JsonObject { ["line"] = 0 , ["character"] = 0 } , ["end"] = new JsonObject { ["line"] = 0 , ["character"] = 1 } } ,
+            ["context"] = new JsonObject {
+                ["diagnostics"] = new JsonArray(new JsonObject {
+                    ["range"] = new JsonObject { ["start"] = new JsonObject { ["line"] = 0 , ["character"] = 5 } , ["end"] = new JsonObject { ["line"] = 0 , ["character"] = 40 } } ,
+                    ["code"] = "JY2002" ,
+                    ["message"] = "..." ,
+                })
+            }
+        });
+        var replies = Exchange(new[] { Initialize() , Open("x = 1") , request }.Concat(Shutdown()).ToArray());
+        var reply = replies.Single(r => r["id"]?.GetValue<int>() == request["id"]!.GetValue<int>());
+        Assert.Null(reply["error"]);
+        Assert.Empty(reply["result"]!.AsArray());
+    }
+
+    //구조체 변수의 이름을 바꾸면 멤버 이름(p.x)의 앞부분도 바뀜 (0.5.1)
+    [Fact]
+    public void RenameUpdatesMemberNames()
+    {
+        string text = "struct point\nparam x\nendstruct\np = point 1\np.x = 2\nconsole.writeline p.x";
+        var edits = Ask(text , At("textDocument/rename" , 3 , 0 , new JsonObject { ["newName"] = "q" }))!["changes"]![Uri]!.AsArray();
+        var ranges = edits.Select(e => (Line: e!["range"]!["start"]!["line"]!.GetValue<int>() , Start: e["range"]!["start"]!["character"]!.GetValue<int>() , End: e["range"]!["end"]!["character"]!.GetValue<int>())).OrderBy(r => r.Line).ToArray();
+        Assert.Equal(new[] { (3 , 0 , 1) , (4 , 0 , 1) , (5 , 18 , 19) } , ranges);
+    }
+
     [Fact]
     public void UnknownMethod()
     {

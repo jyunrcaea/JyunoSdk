@@ -26,7 +26,7 @@ Jyuno 인터프리터는 NuGet의 [`Jyuno`](https://www.nuget.org/packages/Jyuno
 ## 설치
 
 ### 실행 파일 (권장)
-[Releases](https://github.com/jyunrcaea/JyunoSdk/releases)에서 운영체제에 맞는 `jyuno` 파일을 받으세요. .NET 설치 없이 실행됩니다.
+[Releases](https://github.com/jyunrcaea/JyunoPrompt/releases)에서 운영체제에 맞는 `jyuno` 파일을 받으세요. .NET 설치 없이 실행됩니다.
 
 ### dotnet tool
 ```
@@ -61,6 +61,7 @@ jyuno --version                버전을 출력합니다.
   --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
   --native-js [출력 파일]      Native JS로 변환해서 저장합니다. (node 출력파일.js 로 실행)
 ```
+실행 중 오류는 `파일:줄: 오류: 메시지`로 출력하고 종료 코드 1을 반환합니다. Ctrl+C를 누르면 실행 중인 줄이 끝난 뒤에 멈추고 종료 코드 130을 반환하며, 한번 더 누르면 바로 끝납니다. (0.5.1부터)
 
 ### 대화형 프롬프트
 ```
@@ -147,6 +148,7 @@ vim.lsp.enable('jyuno')
 | JY1005 | 오류 | 줄 맨 앞이 아닌 곳에 쓴 키워드 |
 | JY1006 | 오류 | goto로 함수 안팎을 넘나듦 |
 | JY1007 | 오류 | 연산자 식 문법 오류 (값이 없는 연산자, 구조체 밖이나 다시 정의할수 없는 연산자 함수 등, Jyuno 1.6.0부터) |
+| JY1008 | 오류 | 식이 끝난 뒤에 남은 값 (예: `x = 5 -3`, Jyuno 1.6.2부터 실행하면 오류) |
 | JY2001 | 경고 | 정의되지 않은 함수/변수 |
 | JY2002 | 경고 | 함수를 괄호 없이 인자로 넘김 (값을 읽을수 없음) |
 | JY2003 | 경고 | 실행되지 않고 무시되는 토큰 |
@@ -154,11 +156,12 @@ vim.lsp.enable('jyuno')
 | JY2005 | 경고 | 설정된 프로그램이 제공하지 않는 명령어 묶음 (예: file) |
 
 ## Native JS
-> 소개, 사용법, 제약, 동작 원리, 연구 결과(성능과 호환성 검증)는 [위키](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS)에 자세히 정리되어 있습니다.
+> 소개, 사용법, 제약, 동작 원리, 연구 결과(성능과 호환성 검증)는 [위키](https://github.com/jyunrcaea/JyunoPrompt/wiki/Native-JS)에 자세히 정리되어 있습니다.
 
 Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno 런타임(값, 연산, console/math 명령어)이 들어 있어서, 다른 파일 없이 Node.js나 브라우저에서 실행됩니다.
 인터프리터와 같은 결과(출력, 반환값, 오류 메시지와 줄)를 내도록 차등 테스트로 검증했고, 반복문이나 함수 호출이 많은 코드에서 훨씬 빠릅니다.
 0.5.0부터 Jyuno 1.6.0의 연산자(`+`, `==`, `&&`, `?:`, `x += 1` 등)와 구조체의 연산자 함수(`func +`)도 변환합니다. `&&`, `||`, `??`, `?:`는 인터프리터처럼 필요한 쪽만 계산합니다.
+0.5.1부터 Jyuno 1.6.2의 동작(배열/리스트의 `[1, 2]` 문자열, 사칙연산 오류 메시지, 필드 이름으로 하는 구조체 비교, 문자열을 돌려주는 `console.read`)을 따릅니다.
 ```
 jyuno hello.jyuno --native-js          # hello.js 생성
 jyuno hello.jyuno --native-js out.js   # out.js 생성
@@ -233,7 +236,7 @@ dotnet test tests/JyunoSdk.Tests -p:JyunoSource=../Jyuno/Jyuno.csproj
 Jyuno에 새 내장 명령어가 추가되면 `src/JyunoSdk.Analysis/Builtins.cs`에 설명을 추가해야 합니다. (`BuiltinTests`가 알려줍니다)
 
 ## 위키
-[위키](https://github.com/jyunrcaea/JyunoSdk/wiki) 문서는 [`docs/wiki`](docs/wiki)에 있습니다. master에 푸시하면 Wiki 워크플로우([`wiki.yml`](.github/workflows/wiki.yml))가 위키에 그대로 올립니다. 위키를 직접 고치면 다음 동기화 때 덮어써지니 이 폴더에서 고쳐 주세요.
+[위키](https://github.com/jyunrcaea/JyunoPrompt/wiki) 문서는 [`docs/wiki`](docs/wiki)에 있습니다. master에 푸시하면 Wiki 워크플로우([`wiki.yml`](.github/workflows/wiki.yml))가 위키에 그대로 올립니다. 위키를 직접 고치면 다음 동기화 때 덮어써지니 이 폴더에서 고쳐 주세요.
 
 ## 릴리즈
 ``v1.2.3`` 형식의 태그를 푸시하면 GitHub Actions가 테스트 후 운영체제별 `jyuno` 실행 파일(Windows/Linux/macOS, x64/arm64)과 NuGet 패키지를 GitHub 릴리즈에 올리고, NuGet에 `JyunoSdk`(dotnet tool), `JyunoSdk.Analysis`, `JyunoSdk.LanguageServer`, `JyunoSdk.NativeJs`를 배포합니다.

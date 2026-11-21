@@ -165,6 +165,16 @@ public static class Program
         //실험적 최적화 (Jyuno 1.5.2부터, 기본값은 꺼짐): 결과는 같고 구조체 복사와 작은 함수 호출이 빨라짐
         interpreter.EscapeAnalysis = parsed.Optimize;
         interpreter.Inlining = parsed.Optimize;
+        //Ctrl+C: 처음에는 실행 중인 줄이 끝난 뒤에 멈추고(Jyuno 1.6.2의 CancellationToken), 한번 더 누르면 바로 끝냄
+        using CancellationTokenSource cancel = new();
+        ConsoleCancelEventHandler stop = (_ , e) => {
+            if (cancel.IsCancellationRequested)
+                return;
+            e.Cancel = true;
+            cancel.Cancel();
+        };
+        Console.CancelKeyPress += stop;
+        interpreter.CancellationToken = cancel.Token;
         try
         {
             object? result = interpreter.Run();
@@ -175,12 +185,29 @@ public static class Program
             }
             return 0;
         }
+        catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"{path}:{interpreter.LastErrorLine + 1}: 실행을 멈췄습니다.");
+            return 130;
+        }
         catch (JyunoException e)
         {
-            Console.Error.WriteLine($"{path}: 오류: {e.Message}");
+            Console.Error.WriteLine($"{where(path , e.Line >= 0 ? e.Line : interpreter.LastErrorLine)}: 오류: {e.Message}");
             return 1;
         }
+        //Jyuno 오류가 아닌 예외(호스트 함수의 버그 등)도 스택 추적 대신 줄 번호와 메시지만 출력
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            Console.Error.WriteLine($"{where(path , interpreter.LastErrorLine)}: 오류: {e.GetType().Name}: {e.Message}");
+            return 1;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= stop;
+        }
     }
+    //오류 위치 (줄 번호는 1부터, 알수 없다면 파일 이름만)
+    static string where(string path , int line) => line >= 0 ? $"{path}:{line + 1}" : path;
 
     //Jyuno 코드를 JavaScript로 변환해서 저장 (실행하지 않음)
     static int ExportNativeJs(string path , string output , Runtime runtime , CommandGroups commands)

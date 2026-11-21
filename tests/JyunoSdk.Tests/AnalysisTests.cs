@@ -301,8 +301,11 @@ console.writeline (equal p q) (string q)") },
     {
         Assert.Contains(DiagnosticCodes.Parenthesis , Codes(Parse("x = add (mul 1 2")));
         Assert.Contains(DiagnosticCodes.Parenthesis , Codes(Parse("(add 1 2")));
-        Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("add 1 2) 3")));
-        Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("(add 1 2) 3")));
+        //식이 끝난 뒤에 남은 값: Jyuno 1.6.2부터 실행하면 오류
+        Assert.Contains(DiagnosticCodes.TrailingTokens , Codes(Parse("add 1 2) 3")));
+        Assert.Contains(DiagnosticCodes.TrailingTokens , Codes(Parse("(add 1 2) 3")));
+        Assert.Contains(DiagnosticCodes.TrailingTokens , Codes(Parse("local x = 5 -3")));
+        Assert.DoesNotContain(DiagnosticCodes.TrailingTokens , Codes(Parse("x = 5 - 3")));
         Assert.Empty(Parse("x = (add (mul 1 2) (sub 3 4))").Diagnostics);
     }
 
@@ -311,7 +314,7 @@ console.writeline (equal p q) (string q)") },
     {
         //함수 호출은 연산자보다 먼저 묶임: (add 1) + 2 (Jyuno 1.6.0부터)
         Assert.Empty(Parse("x = add 1 + 2").Diagnostics);
-        Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("+ 1 2")));
+        Assert.Contains(DiagnosticCodes.TrailingTokens , Codes(Parse("+ 1 2")));
         Assert.Contains(DiagnosticCodes.MisplacedKeyword , Codes(Parse("x = (if 1)")));
         Assert.Contains(DiagnosticCodes.Ignored , Codes(Parse("while 1" , "end 3")));
     }
@@ -459,6 +462,22 @@ public class AnalysisFuzzTests
             }
         }
     }
+
+    //아주 깊게 중첩된 식은 분석기를 스택 오버플로로 끝내지 않고 Jyuno와 같은 문법 오류 (0.5.1)
+    [Fact]
+    public void DeepExpressionIsSyntaxError()
+    {
+        string deep = "x = " + string.Concat(Enumerable.Repeat("(" , 100000)) + "1" + string.Concat(Enumerable.Repeat(")" , 100000));
+        var error = Assert.Single(JyunoDocument.Parse(deep).Diagnostics , d => d.Code == DiagnosticCodes.OperatorSyntax);
+        Assert.Contains("깊게 중첩" , error.Message);
+        string chain = "x = " + string.Join(" ?? " , Enumerable.Repeat("1" , 50000));
+        Assert.Contains(JyunoDocument.Parse(chain).Diagnostics , d => d.Code == DiagnosticCodes.OperatorSyntax);
+        Assert.Empty(JyunoDocument.Parse("x = " + string.Concat(Enumerable.Repeat("(" , 100)) + "1" + string.Concat(Enumerable.Repeat(")" , 100))).Diagnostics);
+    }
+
+    //탭은 공백 (Jyuno 1.6.2)
+    [Fact]
+    public void TabIsWhitespace() => Assert.Empty(JyunoDocument.Parse(new[] { "x\t=\t1\t+\t2" , "console.writeline\tx" }).Diagnostics);
 
     //블록 구조 오류는 Jyuno가 실행할 때 내는 문법 오류와 같아야 함 (실행이 그 줄에 도달하는 경우)
     [Fact]

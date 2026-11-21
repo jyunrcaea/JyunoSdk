@@ -426,7 +426,43 @@ public sealed partial class JyunoLanguageServer
             ["range"] = Range(o) ,
             ["newText"] = new_name ,
         }).ToArray());
+        //구조체 값의 멤버 이름(p.x, p.x = 1)도 점 앞부분을 같이 바꿈 (바꾸지 않으면 p를 q로 바꾼 뒤 p.x가 없는 이름이 됨)
+        foreach (NameOccurrence member in MemberNamesOf(document , symbol))
+        {
+            edits.Add(new JsonObject {
+                ["range"] = Range(member.Line , member.Start , member.Line , member.Start + symbol.Name.Length) ,
+                ["newText"] = new_name ,
+            });
+        }
         return new JsonObject { ["changes"] = new JsonObject { [uri] = edits } };
+    }
+
+    //symbol.(멤버) 형식의 이름 중 점 앞부분이 symbol인 것 (가장 긴 앞부분부터 찾음, 분석기의 member_owner와 같음)
+    static IEnumerable<NameOccurrence> MemberNamesOf(JyunoDocument document , Symbol symbol)
+    {
+        string prefix = symbol.Name + ".";
+        foreach (NameOccurrence occurrence in document.Names)
+        {
+            if (!occurrence.Name.StartsWith(prefix , StringComparison.Ordinal))
+                continue;
+            if (occurrence.MemberOf is not null)
+            {
+                if (occurrence.MemberOf == symbol)
+                    yield return occurrence;
+                continue;
+            }
+            //p.x = 1처럼 이름 자체가 정의된 경우: 보이는 영역에서 점 앞부분이 가리키는 이름
+            string name = occurrence.Name;
+            for (int dot = name.LastIndexOf('.') ; dot > 0 ; dot = name.LastIndexOf('.' , dot - 1))
+            {
+                Symbol? owner = occurrence.Scope.Chain().Select(s => s.Symbols.GetValueOrDefault(name[..dot])).FirstOrDefault(s => s is not null);
+                if (owner is null)
+                    continue;
+                if (owner == symbol)
+                    yield return occurrence;
+                break;
+            }
+        }
     }
 
     #endregion
@@ -551,9 +587,12 @@ public sealed partial class JyunoLanguageServer
             int line = diagnostic["range"]!["start"]!["line"]!.GetValue<int>();
             int start = diagnostic["range"]!["start"]!["character"]!.GetValue<int>();
             int end = diagnostic["range"]!["end"]!["character"]!.GetValue<int>();
-            if (line >= document.Lines.Count)
+            if (line < 0 || line >= document.Lines.Count)
                 continue;
             var info = document.Lines[line];
+            //문서가 바뀐 뒤에 온 요청 등 범위가 줄을 벗어나면 고치지 않음 (오류 응답 대신 빈 목록)
+            if (start < 0 || end < start || end > info.Text.Length)
+                continue;
             string? title = null;
             int from = start, to = end;
             switch (code)

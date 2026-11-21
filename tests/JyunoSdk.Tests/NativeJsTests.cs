@@ -228,6 +228,7 @@ console.writeline (div x 0)") },
         //인터프리터
         StringWriter expected = new();
         string? expected_error = null;
+        int error_line = lines.Length;
         TextWriter original = Console.Out;
         Console.SetOut(expected);
         try
@@ -238,6 +239,9 @@ console.writeline (div x 0)") },
         catch (JyunoException e)
         {
             expected_error = e.Message;
+            //오류가 난 줄 (Jyuno 1.6.2부터)
+            if (e.Line >= 0)
+                error_line = e.Line + 1;
         }
         finally
         {
@@ -264,7 +268,7 @@ console.writeline (div x 0)") },
             else
             {
                 Assert.Equal(1 , process.ExitCode);
-                Assert.Contains($"{name}.jyuno:{lines.Length}: 오류: {expected_error}" , stderr.Result);
+                Assert.Contains($"{name}.jyuno:{error_line}: 오류: {expected_error}" , stderr.Result);
             }
         }
         finally

@@ -1,7 +1,7 @@
 # JyunoSdk
 
 The SDK for the [Jyuno](https://github.com/jyunrcaea/Jyuno) language. (Formerly JyunoPrompt)  
-[GitHub](https://github.com/jyunrcaea/JyunoSdk) · [Wiki](https://github.com/jyunrcaea/JyunoSdk/wiki) · [Website & Playground](https://jyunrcaea.github.io/JyunoWeb)
+[GitHub](https://github.com/jyunrcaea/JyunoPrompt) · [Wiki](https://github.com/jyunrcaea/JyunoPrompt/wiki) · [Website & Playground](https://jyunrcaea.github.io/JyunoWeb)
 
 A single `jyuno` command provides:
 
@@ -26,7 +26,7 @@ The Jyuno interpreter comes from the [`Jyuno`](https://www.nuget.org/packages/Jy
 ## Installation
 
 ### Executable (recommended)
-Download the `jyuno` file for your operating system from [Releases](https://github.com/jyunrcaea/JyunoSdk/releases). It runs without installing .NET.
+Download the `jyuno` file for your operating system from [Releases](https://github.com/jyunrcaea/JyunoPrompt/releases). It runs without installing .NET.
 
 ### dotnet tool
 ```
@@ -34,7 +34,7 @@ dotnet tool install -g JyunoSdk
 ```
 
 ### Build from source
-Clone the [repository](https://github.com/jyunrcaea/JyunoSdk) and run (requires the .NET 8 SDK):
+Clone the [repository](https://github.com/jyunrcaea/JyunoPrompt) and run (requires the .NET 8 SDK):
 ```
 dotnet run --project src/JyunoSdk.Cli
 ```
@@ -62,6 +62,7 @@ Options:
   --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
   --native-js [output file]    Translate to Native JS and save. (Run it with node <output file>.js)
 ```
+A runtime error is printed as `file:line: 오류: message` and returns exit code 1. Ctrl+C stops after the running line and returns exit code 130; pressing it again exits immediately. (since 0.5.1)
 
 ### Interactive prompt
 ```
@@ -149,6 +150,7 @@ vim.lsp.enable('jyuno')
 | JY1005 | Error | Keyword used somewhere other than the start of a line |
 | JY1006 | Error | goto jumps into or out of a function |
 | JY1007 | Error | Operator expression syntax error (operator without a value, operator function outside a struct or for an operator that can't be redefined, etc., since Jyuno 1.6.0) |
+| JY1008 | Error | Value left over after the expression ended (e.g. `x = 5 -3`, an error when run since Jyuno 1.6.2) |
 | JY2001 | Warning | Undefined function/variable |
 | JY2002 | Warning | Function passed as an argument without parentheses (its value can't be read) |
 | JY2003 | Warning | Token that is ignored and never run |
@@ -156,11 +158,12 @@ vim.lsp.enable('jyuno')
 | JY2005 | Warning | Command group not provided by the configured program (e.g. file) |
 
 ## Native JS
-> The introduction, usage, restrictions, internals and research results (performance and compatibility verification) are covered in detail in the [wiki](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS) (in Korean).
+> The introduction, usage, restrictions, internals and research results (performance and compatibility verification) are covered in detail in the [wiki](https://github.com/jyunrcaea/JyunoPrompt/wiki/Native-JS) (in Korean).
 
 Translates Jyuno code to JavaScript. The generated file contains the Jyuno runtime (values, operations, console/math commands), so it runs in Node.js or a browser with no other files.
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
+Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js
