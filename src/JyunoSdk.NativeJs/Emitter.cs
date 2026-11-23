@@ -32,6 +32,13 @@ sealed class Emitter
             foreach (var (name , kinds) in f.InnerScope.Names)
                 member_kinds[name] = member_kinds.TryGetValue(name , out NameKinds k) ? k | kinds : kinds;
         }
+        //ttl/try (Jyuno 1.7.0): 쓰지 않는 스크립트는 이전과 똑같은 코드를 만듦
+        if (analysis.Root is Block root)
+            foreach (Statement st in all_statements(root))
+            {
+                has_ttl |= st is TtlStatement;
+                has_try |= st is TryStatement or ThrowStatement;
+            }
         //구조체가 다시 정의한 연산자 (Jyuno 1.6.0): 구조체 생성자에서 'func +' 등으로 정의한 것만 연산자로 쓰임
         foreach (FunctionStatement f in analysis.Functions)
         {
@@ -46,6 +53,34 @@ sealed class Emitter
             defined_operators.Add(symbol);
         }
     }
+    //─────────── ttl, try/catch (Jyuno 1.7.0) ───────────
+    //ttl: 시간 확인은 ttl 블록 안(감시 코드)에서만 함. 함수는 감시용 사본을 하나 더 만들고, 원래 함수는 원래 하던 호출 깊이 검사($depth >= 200)에서
+    //넘어감: ttl이 진행중인 동안은 $depth에 TtlBias를 더해 두므로 모든 호출이 검사에 걸려 $enter를 거쳐 사본으로 감
+    //그래서 ttl 밖의 코드는 ttl이 없는 스크립트와 같은 비교 한번만 함 (상수 200과 비교, 변수와 비교하면 호출이 많은 코드에서 3~5% 느려짐)
+    const int TtlBias = 1 << 20;
+    bool has_ttl, has_try;
+    //감시 코드의 확인 지점(반복 한번, 함수 호출 한번): 카운터를 줄이고 다 쓰면 시계를 읽음
+    const string tick = " if (--$tk < 0) $tk = $tick();";
+    static IEnumerable<Statement> all_statements(Block block)
+    {
+        foreach (Statement s in block.Statements)
+        {
+            yield return s;
+            IEnumerable<Block> inner = s switch {
+                IfStatement b => b.Else is null ? new[] { b.Then } : new[] { b.Then , b.Else },
+                LoopStatement l => new[] { l.Body },
+                ForStatement f => new[] { f.Body },
+                FunctionStatement f => new[] { f.Body },
+                TtlStatement t => new[] { t.Body },
+                TryStatement t => new[] { t.Body , t.CatchBody },
+                _ => Array.Empty<Block>()
+            };
+            foreach (Block b in inner)
+                foreach (Statement x in all_statements(b))
+                    yield return x;
+        }
+    }
+
     //구조체 영역 → 그 구조체가 다시 정의한 연산자 기호들, 어느 구조체든 다시 정의한 연산자 기호
     readonly Dictionary<Scope , List<string>> operators = new();
     readonly HashSet<string> defined_operators = new();
@@ -234,6 +269,8 @@ sealed class Emitter
         public string? Self;
         //지금 만들고 있는 코드를 감싼 반복문의 수 (다시 실행될수 있는 param을 구별)
         public int Loops;
+        //지금 만들고 있는 코드를 감싼 catch 본문의 예외 변수 (값 없는 throw는 가장 안쪽의 것을 다시 던짐, 함수를 넘지 않음)
+        public readonly List<string> Catches = new();
     }
     sealed class Cx
     {
@@ -242,6 +279,8 @@ sealed class Emitter
         public readonly Fn Fn;
         public State St;
         public int Line;
+        //ttl 블록 안 또는 함수의 감시용 사본: 반복 한번마다 시간 제한을 확인
+        public bool Watched;
     }
 
     static char get_status(Cx cx , Scope scope , string name)
@@ -739,8 +778,10 @@ sealed class Emitter
         }
         if (callable(kinds) && !holder_fallback)
         {
+            //감시 코드(ttl 안)에서는 사용자 함수의 감시용 사본($w)을 바로 부름 (원래 함수를 거쳐 넘어가는 호출 한 단계를 줄임)
+            //이 자리의 이름은 func/struct로 만든 함수만 담을수 있고(아니라면 $unknownCall이 먼저 오류), ttl이 있는 스크립트의 함수는 모두 사본이 있음
             if (!parts.Any(p => p.Self is not null))
-                return new($"{holder_of(p => p.Slot)}({string.Join(", " , gen_args(cx , e.Arguments))})");
+                return new($"{holder_of(p => p.Slot)}{(cx.Watched ? ".$w" : "")}({string.Join(", " , gen_args(cx , e.Arguments))})");
             //구조체 함수: 'obj.f_name(...)' 형식이면 JS가 this를 넘김
             if (definite && parts.Count is 1 && parts[0].Test is null)
                 return new($"{parts[0].Slot}({string.Join(", " , gen_args(cx , e.Arguments))})");
@@ -839,7 +880,7 @@ sealed class Emitter
         if (dispatches.TryGetValue(block , out Dispatch? d))
         {
             string pc = $"$pc{d.Id}", label = $"$D{d.Id}";
-            emit($"{{ let {pc} = 0; {label}: for (;;) {{ switch ({pc}) {{ case 0:" , statements.Count > 0 ? statements[0].Line : block.EndLine);
+            emit($"{{ let {pc} = 0; {label}: for (;;) {{{(cx.Watched ? tick : "")} switch ({pc}) {{ case 0:" , statements.Count > 0 ? statements[0].Line : block.EndLine);
             for (int i = 0 ; i < statements.Count ; i++)
             {
                 if (d.Cases.TryGetValue(i , out int c))
@@ -908,7 +949,7 @@ sealed class Emitter
                         set_status(cx , cx.Scope , name , 'M');
                 State head = cx.St.Clone();
                 string label = $"$L{s.Line}";
-                string release = options.MemoryGuard ? release_temps : "";
+                string release = (options.MemoryGuard ? release_temps : "") + (cx.Watched ? tick : "");
                 if (loop.Kind is StatementKind.While)
                     emit($"{label}: while ({condition(cx , loop.Arguments)}) {{{release}" , s.Line);
                 else
@@ -942,16 +983,16 @@ sealed class Emitter
                 Scope inner = each.InnerScope;
                 State inner_state = cx.St.Clone();
                 inner_state[inner] = fresh(inner , each.VariableName);
-                Cx icx = new(inner , cx.Fn , inner_state);
+                Cx icx = new(inner , cx.Fn , inner_state) { Watched = cx.Watched };
                 string item = has_structs ? $"own({it}[{i}])" : $"{it}[{i}]";
                 var declarations = inner.NameOrder.Select(n => n == each.VariableName ? $"{slot(inner , n)} = {item}" : $"{slot(inner , n)} = U");
                 //메모리 한도: 반복 한번의 변수(새 영역)를 읽는 함수를 이 for 문의 자리에 등록하고, 이전 반복에서 계산 중이던 큰 값을 놓음
                 //본문에 반복문이 없다면 반복 한번의 변수에는 값이 쌓이지 않으므로(큰 값은 $temps), 순회할 원소만 한번 등록
                 bool per_iteration = options.MemoryGuard && has_repeat(each.Body);
                 string reader = $"$roots[$rk + {cx.Fn.Fors + 1}] = () => [{{0}}]; $roots.length = $rk + {cx.Fn.Fors + 2};";
-                string iteration_roots = !options.MemoryGuard ? ""
+                string iteration_roots = (!options.MemoryGuard ? ""
                     : per_iteration ? " " + string.Format(reader , string.Join(", " , inner.NameOrder.Select(n => slot(inner , n)).Prepend(it))) + release_temps
-                    : release_temps;
+                    : release_temps) + (cx.Watched ? tick : "");
                 string entry_roots = options.MemoryGuard && !per_iteration ? " " + string.Format(reader , it) : "";
                 emit($"{{ const {it} = forItems({source});{entry_roots} {label}: for (let {i} = 0; {i} < {it}.length; {i}++) {{ let {string.Join(", " , declarations)};{iteration_roots}" , s.Line);
                 cx.Fn.Loops++;
@@ -1008,40 +1049,38 @@ sealed class Emitter
                 }
                 //구조체 함수(생성자 영역에서 정의한 함수): 구조체 정의마다 한번 만들고, 구조체 값은 this로 받음
                 bool method = cx.Scope.Kind is ScopeKind.Struct && function.InnerScope.Parent == cx.Scope;
-                //함수 본문: 바깥 영역의 '없음'은 호출할 때 생길수 있으므로 '모름'
-                State st = new();
-                foreach (var (scope , m) in cx.St)
-                    st[scope] = m.ToDictionary(o => o.Key , o => o.Value is 'U' ? 'M' : o.Value);
-                st[function.InnerScope] = fresh(function.InnerScope , null);
-                Fn fn = new();
-                Cx fcx = new(function.InnerScope , fn , st);
-                var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}");
-                bool guarded = options.MemoryGuard && has_repeat(function.Body);
-                var declarations = function.InnerScope.NameOrder.Select(n => $"{slot(function.InnerScope , n)} = U").ToList();
+                //구조체 생성자의 감시용 사본: 구조체 함수는 이미 만들었으므로 넣기만 함
+                if (method && cx.Scope == skip_methods_of)
+                {
+                    emit($"{order}{function_slot} = $m{s.Line};" , s.Line);
+                    return;
+                }
+                var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}").ToList();
+                string args = string.Join(", " , parameters);
+                string short_name = fname.Length > 40 ? fname[..40] : fname;
+                string self = method ? $"const {self_of(cx.Scope)} = this; " : "";
                 List<(string, int)>? saved = null;
                 if (method)
                 {
                     saved = output;
                     output = new();
-                    emit($"const $m{s.Line} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
-                    emit($"const {self_of(cx.Scope)} = this; if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(function)}" , -2);
+                }
+                string head = method ? $"const $m{s.Line} = " : $"{function_slot} = ";
+                if (has_ttl)
+                {
+                    //원래 함수는 ttl이 진행중일 때만 감시용 사본(함수 객체의 $w)으로 넘어감 (호출 깊이 검사에 걸린 뒤 $enter가 구별)
+                    //사본은 원래 함수와 같은 자리에서 만들어야 같은 변수를 봄 (감싸는 함수를 두면 바깥 변수를 읽을때마다 한 단계 더 거쳐서 느려짐)
+                    string divert = method ? $"$f_{short_name}.$w.call(this{string.Concat(parameters.Select(a => ", " + a))})" : $"$f_{short_name}.$w({args})";
+                    emit($"{head}$withWatched(function $f_{short_name}({args}) {{" , s.Line);
+                    function_body(cx , function , method , $"{self}if ($depth >= 200 && $enter()) return {divert}; $depth++;" , false , ",");
+                    emit($"function $fw_{short_name}({args}) {{" , s.Line);
+                    function_body(cx , function , method , $"{self}if ($depth >= {TtlBias + 200}) $tooDeep();{tick} $depth++;" , true , ");");
                 }
                 else
                 {
-                    emit($"{function_slot} = function $f_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , s.Line);
-                    emit($"if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(function)}" , -2);
+                    emit($"{head}function $f_{short_name}({args}) {{" , s.Line);
+                    function_body(cx , function , method , $"{self}if ($depth >= 200) $tooDeep(); $depth++;" , false , ";");
                 }
-                int temp_at = output.Count;
-                emit("" , s.Line);
-                if (declarations.Count > 0)
-                    emit($"let {string.Join(", " , declarations)};" , s.Line);
-                int root_at = output.Count;
-                emit("" , s.Line);
-                gen_block(fcx , function.Body);
-                emit($"return null; }} finally {{ $depth--;{guard_tail(guarded)} }} }};" , function.EndLine);
-                if (fn.Temps > 0)
-                    output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , s.Line);
-                output[root_at] = (guarded ? root_reader(parameters.Concat(function.InnerScope.NameOrder.Select(n => slot(function.InnerScope , n))) , fn , method ? self_of(cx.Scope) : null) : "" , s.Line);
                 if (saved is not null)
                 {
                     pending_methods.Peek().AddRange(output);
@@ -1112,6 +1151,78 @@ sealed class Emitter
                 set_status(cx , cx.Scope , local.Name , 'D');
                 return;
             }
+            case TtlStatement limit:
+            {
+                //ttl (초) ~ endttl (Jyuno 1.7.0): 인자를 검사하고 상태를 만든 뒤, 본문을 감시 코드로 실행
+                //제한 시각이 지나면 확인 지점에서 그 ttl의 상태를 던지고, 이 블록의 catch가 받아서 endttl 다음 줄로 (바깥 ttl의 것이라면 다시 던짐)
+                //블록을 어떻게 빠져나가든(break, goto, return, 오류) finally에서 바깥 ttl로 되돌림
+                string a = string.Join(", " , gen_args(cx , limit.Arguments));
+                if (limit.Body.Statements.Count is 0)
+                {
+                    //빈 본문: 인자만 검사 (인터프리터도 시간을 확인하지 않음)
+                    emit($"$TT.open([{a}], $ttl);" , s.Line);
+                    return;
+                }
+                string q = $"$q{s.Line}";
+                State entry = cx.St.Clone();
+                //블록에 들어오면 바로 한번 확인 (ttl 0이나 음수라면 본문을 실행하지 않음, 바깥 ttl의 제한이 지났다면 바깥으로)
+                emit($"{{ const {q} = $ttlOpen([{a}]); try {{ $tk = $tick();" , s.Line);
+                Cx wcx = new(cx.Scope , cx.Fn , cx.St) { Watched = true };
+                gen_block(wcx , limit.Body);
+                emit($"}} catch ($e) {{ if ($e !== {q}) throw $e; }} finally {{ $ttlClose({q}); }} }}" , limit.EndLine);
+                //본문의 어느 반복에서든 빠져나갈수 있으므로 본문에서 만든 이름은 '모름'
+                cx.St = State.Join(entry , wcx.St);
+                return;
+            }
+            case TryStatement attempt:
+            {
+                //try ~ catch (이름) ~ tried (Jyuno 1.7.0): JS의 try/catch. 잡을수 없는 오류(한도, 제약, 문법 오류, ttl의 시간 제한, 호스트의 예외)는 다시 던짐
+                //함수 호출, for/repeat의 상태, for 영역은 JS가 정리하고, 블록 안의 다른 대입은 그대로 남음 (인터프리터와 같음)
+                string x = $"$x{s.Line}";
+                State entry = cx.St.Clone();
+                emit("try {" , s.Line);
+                gen_block(cx , attempt.Body);
+                State after_body = cx.St;
+                emit($"}} catch ({x}) {{ if (!$catchable({x})) throw {x};" , attempt.CatchLine);
+                //catch 본문: try 본문의 어느 줄에서든 올수 있음
+                cx.St = State.Join(entry , after_body);
+                if (attempt.CatchName is string name)
+                {
+                    //catch (이름): local처럼 지금 영역의 변수 (구조체 값의 멤버 이름이라면 Native JS 제약)
+                    cx.Line = attempt.CatchLine;
+                    alias_guard(cx , name , attempt.CatchLine);
+                    string catch_slot = slot(cx.Scope , name);
+                    string value = has_structs ? $"own($caught({x}))" : $"$caught({x})";
+                    string order = order_push(cx , cx.Scope , name);
+                    string set = only_var(cx.Scope.Names[name]) ? $"{order}{catch_slot} = {value}" : $"{order}{catch_slot} = $localSet({catch_slot}, {Quote(name)}, {value})";
+                    emit(bind_clear(cx , cx.Scope , name , catch_slot , set) + ";" , attempt.CatchLine);
+                    set_status(cx , cx.Scope , name , 'D');
+                }
+                cx.Fn.Catches.Add(x);
+                gen_block(cx , attempt.CatchBody);
+                cx.Fn.Catches.RemoveAt(cx.Fn.Catches.Count - 1);
+                emit("}" , attempt.EndLine);
+                cx.St = State.Join(after_body , cx.St);
+                return;
+            }
+            case ThrowStatement thrown:
+            {
+                //값 없는 throw: 처리중인 오류(가장 안쪽 catch의 예외)를 그대로 다시 던짐 (오류가 난 줄도 그대로, catch 밖이라면 블록 구조 오류로 미리 걸러짐)
+                if (thrown.IsRethrow)
+                {
+                    emit(cx.Fn.Catches.Count > 0 ? $"throw {cx.Fn.Catches[^1]};" : "$fail(\"다시 던질 오류가 없습니다.\");" , s.Line);
+                    if (cx.Fn.Catches.Count is 0)
+                        uses_operators = true;
+                    return;
+                }
+                var values = gen_args(cx , thrown.Arguments);
+                //throw (값): 구조체 값은 return처럼 복사
+                if (values.Count is 1)
+                    emit($"throw $thrown({own(thrown.Arguments[0] , values[0])}, {s.Line});" , s.Line);
+                else
+                    emit($"({string.Join(", " , values.Append("$throwArity()"))});" , s.Line);
+                return;
+            }
             case TokenErrorStatement:
                 return; //위에서 처리
         }
@@ -1130,8 +1241,37 @@ sealed class Emitter
         throw new InvalidOperationException("알수없는 문장 " + s.Kind);
     }
 
+    //함수 본문 (머리의 호출 깊이 검사부터 닫는 괄호까지). watched: ttl의 감시용 사본 (반복 한번마다 시간 확인)
+    void function_body(Cx cx , FunctionStatement function , bool method , string prologue , bool watched , string close)
+    {
+        //함수 본문: 바깥 영역의 '없음'은 호출할 때 생길수 있으므로 '모름'
+        State st = new();
+        foreach (var (scope , m) in cx.St)
+            st[scope] = m.ToDictionary(o => o.Key , o => o.Value is 'U' ? 'M' : o.Value);
+        st[function.InnerScope] = fresh(function.InnerScope , null);
+        Fn fn = new();
+        Cx fcx = new(function.InnerScope , fn , st) { Watched = watched };
+        var parameters = Enumerable.Range(0 , function.ParameterCount).Select(i => $"$a{i}");
+        bool guarded = options.MemoryGuard && has_repeat(function.Body);
+        var declarations = function.InnerScope.NameOrder.Select(n => $"{slot(function.InnerScope , n)} = U").ToList();
+        emit($"{prologue}{guard_head(guarded)} try {{{own_parameters(function)}" , -2);
+        int temp_at = output.Count;
+        emit("" , function.Line);
+        if (declarations.Count > 0)
+            emit($"let {string.Join(", " , declarations)};" , function.Line);
+        int root_at = output.Count;
+        emit("" , function.Line);
+        gen_block(fcx , function.Body);
+        emit($"return null; }} finally {{ $depth--;{guard_tail(guarded)} }} }}{close}" , function.EndLine);
+        if (fn.Temps > 0)
+            output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , function.Line);
+        output[root_at] = (guarded ? root_reader(parameters.Concat(function.InnerScope.NameOrder.Select(n => slot(function.InnerScope , n))) , fn , method ? self_of(cx.Scope) : null) : "" , function.Line);
+    }
+
     //─────────── 구조체 ───────────
     readonly Stack<List<(string, int)>> pending_methods = new();
+    //감시용 사본을 만들고 있는 구조체 생성자의 영역 (그 구조체의 구조체 함수는 다시 만들지 않음)
+    Scope? skip_methods_of;
     //함수/생성자에 들어올 때 인자로 받은 구조체 값을 복사 (인터프리터는 인자를 읽을때 복사하므로, 함수 안에서 원래 값이 바뀌어도 영향 없음)
     string own_parameters(FunctionStatement function)
         => has_structs ? string.Concat(Enumerable.Range(0 , function.ParameterCount).Select(i => $" $a{i} = own($a{i});")) : "";
@@ -1142,6 +1282,8 @@ sealed class Emitter
     static bool has_repeat(Block block) => block.Statements.Any(s => s switch {
         LoopStatement or ForStatement or GotoStatement => true,
         IfStatement branch => has_repeat(branch.Then) || (branch.Else is Block other && has_repeat(other)),
+        TtlStatement limit => has_repeat(limit.Body),
+        TryStatement attempt => has_repeat(attempt.Body) || has_repeat(attempt.CatchBody),
         _ => false
     });
     static string guard_head(bool guarded) => guarded ? " const $rk = $roots.length, $tf = $temps.length;" : "";
@@ -1173,33 +1315,57 @@ sealed class Emitter
         string ctor_slot = slot(cx.Scope , structure.Name);
         set_status(cx , cx.Scope , structure.Name , 'D');
         Scope inner = structure.InnerScope;
+        var parameters = Enumerable.Range(0 , structure.ParameterCount).Select(i => $"$a{i}").ToList();
+        string args = string.Join(", " , parameters);
+        string fname = mangle(structure.Name);
+        string short_name = fname.Length > 40 ? fname[..40] : fname;
+        emit($"{ctor_slot} = (() => {{" , line);
+        int methods_at = output.Count;
+        pending_methods.Push(new());
+        if (has_ttl)
+        {
+            //함수처럼 감시용 사본을 만듦 (구조체 함수는 원래 생성자를 만들 때 한번만)
+            emit($"return $withWatched(function $c_{short_name}({args}) {{" , line);
+            struct_body(cx , structure , $"if ($depth >= 200 && $enter()) return $c_{short_name}.$w({args}); $depth++;" , false , ",");
+            emit($"function $cw_{short_name}({args}) {{" , line);
+            Scope? outer_skip = skip_methods_of;
+            skip_methods_of = inner;
+            struct_body(cx , structure , $"if ($depth >= {TtlBias + 200}) $tooDeep();{tick} $depth++;" , true , ");");
+            skip_methods_of = outer_skip;
+        }
+        else
+        {
+            emit($"return function $c_{short_name}({args}) {{" , line);
+            struct_body(cx , structure , "if ($depth >= 200) $tooDeep(); $depth++;" , false , ";");
+        }
+        emit("})();" , structure.EndLine);
+        output.InsertRange(methods_at , pending_methods.Pop());
+    }
+    //구조체 생성자 본문 (머리의 호출 깊이 검사부터 닫는 괄호까지)
+    void struct_body(Cx cx , FunctionStatement structure , string prologue , bool watched , string close)
+    {
+        int line = structure.Line;
+        Scope inner = structure.InnerScope;
         string self = self_of(inner);
         State st = new();
         foreach (var (scope , m) in cx.St)
             st[scope] = m.ToDictionary(o => o.Key , o => o.Value is 'U' ? 'M' : o.Value);
         st[inner] = fresh(inner , null);
         Fn fn = new() { Self = self };
-        Cx fcx = new(inner , fn , st);
+        Cx fcx = new(inner , fn , st) { Watched = watched };
         var parameters = Enumerable.Range(0 , structure.ParameterCount).Select(i => $"$a{i}");
-        string fname = mangle(structure.Name);
-        emit($"{ctor_slot} = (() => {{" , line);
-        int methods_at = output.Count;
-        pending_methods.Push(new());
-        emit($"return function $c_{(fname.Length > 40 ? fname[..40] : fname)}({string.Join(", " , parameters)}) {{" , line);
         bool guarded = options.MemoryGuard && has_repeat(structure.Body);
-        emit($"if ($depth >= 200) $tooDeep(); $depth++;{guard_head(guarded)} try {{{own_parameters(structure)}" , -2);
+        emit($"{prologue}{guard_head(guarded)} try {{{own_parameters(structure)}" , -2);
         int temp_at = output.Count;
         emit("" , line);
         emit($"const {self} = new $T{inner.Id}({string.Join(", " , inner.NameOrder.Select(prop).Concat(operator_props(inner)).Select(_ => "U").Prepend("[]"))});" , line);
         int root_at = output.Count;
         emit("" , line);
         gen_block(fcx , structure.Body);
-        emit($"return {self}; }} finally {{ $depth--;{guard_tail(guarded)} }} }};" , structure.EndLine);
+        emit($"return {self}; }} finally {{ $depth--;{guard_tail(guarded)} }} }}{close}" , structure.EndLine);
         if (fn.Temps > 0)
             output[temp_at] = ($"let {string.Join(", " , Enumerable.Range(0 , fn.Temps).Select(i => $"$t{i}"))};" , line);
         output[root_at] = (guarded ? root_reader(parameters , fn , self) : "" , line);
-        emit("})();" , structure.EndLine);
-        output.InsertRange(methods_at , pending_methods.Pop());
     }
     //구조체마다 JS 클래스 (필드 모양이 고정되어 V8이 빠르게 다룸)
     IEnumerable<string> struct_classes()
@@ -1216,6 +1382,49 @@ sealed class Emitter
             yield return $"{t}.prototype.$copy = function (m) {{ return new {t}({string.Join(", " , props.Select(p => $"copyValue(this.{p}, m)").Prepend("this.$o"))}); }};";
             yield return $"{t}.prototype.$same = function (b) {{ return sameFields(this, b); }};";
         }
+    }
+
+    //줄마다 가장 안쪽의 try 블록 (try 줄 * 2 + catch 본문이면 1, 없다면 -1). Interpreter.BlockMap.Region/InCatch와 같음
+    //try/catch/tried 줄 자신은 바깥 블록에 속하고, 함수 본문은 바깥 try와 관계없음
+    int[] try_regions()
+    {
+        int[] region = new int[analysis.LineCount];
+        Array.Fill(region , -1);
+        void mark(int from , int to , int r)
+        {
+            for (int i = Math.Max(from , 0) ; i <= to && i < region.Length ; i++)
+                region[i] = r;
+        }
+        void walk(Block block , int r)
+        {
+            foreach (Statement st in block.Statements)
+            {
+                mark(st.Line , st is BlockStatement b ? b.EndLine : st.Line , r);
+                switch (st)
+                {
+                    case TryStatement t:
+                        walk(t.Body , t.Line * 2);
+                        walk(t.CatchBody , t.Line * 2 + 1);
+                        break;
+                    case FunctionStatement f:
+                        //endfunc/endstruct 줄은 함수에 속함
+                        mark(f.Line + 1 , f.EndLine , -1);
+                        walk(f.Body , -1);
+                        break;
+                    case IfStatement i:
+                        walk(i.Then , r);
+                        if (i.Else is not null)
+                            walk(i.Else , r);
+                        break;
+                    case LoopStatement l: walk(l.Body , r); break;
+                    case ForStatement f: walk(f.Body , r); break;
+                    case TtlStatement t: walk(t.Body , r); break;
+                }
+            }
+        }
+        if (analysis.Root is Block root)
+            walk(root , -1);
+        return region;
     }
 
     //─────────── 전체 ───────────
@@ -1258,6 +1467,20 @@ sealed class Emitter
             head.Add("const { JStruct, copyValue, own, equalS2 } = $R;");
             head.Add("const { $structSyntax, $bm, $unbindIf, $aliasDefine } = $X;");
         }
+        if (has_try)
+            head.Add("const { $catchable, $caught, $thrown, $throwArity } = $X;");
+        if (has_ttl)
+        {
+            //$ttl: 가장 안쪽에서 진행중인 ttl, $tk: 시계를 읽을 때까지 남은 확인 지점 수
+            //ttl이 진행중이면 $depth = 호출 깊이 + TtlBias: 원래 함수의 호출 깊이 검사에 걸리면 $enter가 진짜로 깊은지, 사본으로 넘어갈지 정함
+            head.Add("let $tk = 0, $ttl = null;");
+            head.Add("const { $TT } = $X;");
+            head.Add($"const $enter = () => {{ if ($depth < {TtlBias} || $depth >= {TtlBias + 200}) $tooDeep(); return true; }};");
+            head.Add("const $withWatched = (f, w) => { f.$w = w; return f; };");
+            head.Add("const $tick = () => $TT.tick($ttl, $TT.now());");
+            head.Add($"const $ttlOpen = (a) => {{ const s = $TT.open(a, $ttl); if ($ttl === null) $depth += {TtlBias}; $ttl = s; return s; }};");
+            head.Add($"const $ttlClose = (s) => {{ $ttl = s.outer; if ($ttl === null) $depth -= {TtlBias}; }};");
+        }
         if (uses_operators)
         {
             head.Add("const { opEq, opNe, opLt, opGt, opLe, opGe, opXor, opShl, opShr, opNeg, opPlus, opNot, opCom } = $R;");
@@ -1298,6 +1521,8 @@ sealed class Emitter
         write($"  functions: [{string.Join(", " , analysis.Functions.Select(f => $"[{f.Line}, {f.EndLine}]"))}],");
         write($"  probe: $probe, probeLine: {probe_line}, bodyLine: {body_line},");
         write($"  lineMap: [{string.Join("," , body.Select(o => o.Item2))}],");
+        if (has_try)
+            write($"  tryRegion: [{string.Join("," , try_regions())}],");
         write("});");
         write("})();");
         write("if (typeof module === 'object' && module && module.exports) module.exports = JyunoProgram;");

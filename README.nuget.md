@@ -165,7 +165,7 @@ Translates Jyuno code to JavaScript. The generated file contains the Jyuno runti
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
 Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
-Since 0.6.0, JyunoSdk uses Jyuno 1.7.0. The analyzer, language server and interactive prompt understand time-limit blocks (`ttl` ~ `endttl`) and exception handling (`try` / `catch` / `tried`, `throw`), but Native JS doesn't translate them yet and reports an error.
+Since 0.6.0, JyunoSdk uses Jyuno 1.7.0. Since 0.7.0 (Jyuno 1.7.1), Native JS also translates time-limit blocks (`ttl` ~ `endttl`) and exception handling (`try` / `catch` / `tried`, `throw`). Programs that don't use `ttl` are translated to exactly the same code as before. (See [below](#time-limits-and-exceptions-since-070))
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js
@@ -179,12 +179,10 @@ Because variables and functions are translated into fixed slots and called direc
 | --- | --- |
 | Removing variables/functions is not allowed | `x =` |
 | Built-in functions/constants (`add`, `mul`, `console.writeline`, `true`, `math.pi`, etc.) and functions provided by the program can't be redefined/assigned to | `add = 1`, `func mul`, `5 = true`, `for add 'abc'` |
-| goto can't jump into a block (if, while, repeat, for) | `goto inner` (inner is inside an if) |
+| goto can't jump into a block (if, while, repeat, for, ttl) | `goto inner` (inner is inside an if) |
 | Block structure errors (an unmatched end, etc.) are reported before running | |
 | A struct (`struct`) can't be defined inside another struct's constructor | `struct b` inside `struct a` |
 | Member names of a variable holding a struct value (`p.x`, `p.show`) can't be redefined with `func`/`local`/`param`/`struct` (run-time error) | `func p.show` after `p = point 1 2` |
-| Time-limit blocks (`ttl`, Jyuno 1.7.0) are not supported yet | `ttl 5` |
-| Exception handling (`try`/`catch`/`tried`, `throw`, Jyuno 1.7.0) is not supported yet | `try`, `throw 'x'` |
 
 Assigning a value to a variable provided by the program (such as `console.title`) is allowed. If a computed goto target is inside a block, a `Native JS 제약` (Native JS restriction) error is raised at run time.
 The `file.*` and `directory.*` commands are not supported.
@@ -200,6 +198,7 @@ const result = program.run({
   memoryLimit: 256 * 1024 * 1024,          // memory limit (bytes, default 256MB, 0 = no limit, since 0.6.0)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
+// when the program ends with an uncaught throw, result.thrown is the thrown value (since 0.7.0)
 ```
 Host functions must also be named at translation time. (If they are not put in `Globals` as in the library example below, they are translated as "nonexistent functions".)
 To work with Jyuno values in host functions, use `program.runtime` (`JList`, `JDouble`, `JStruct`, `JyunoError`, `str`, `typeName`, etc.). A struct value passed to a host function is a copy; read it with `typeName`, `fieldNames` and `field('name')`.
@@ -210,8 +209,18 @@ When the heap fills up in a browser or Node.js (V8 "heap out of memory"), it can
 - The runtime adds up the size of the values it creates (lists, arrays, strings, structs) and re-measures the live values every time that grows by 1MB or more (and by a multiple of the current usage). So the actual usage can go about 1MB over the limit.
 - Large arrays and strings (`array.new`, `array.range`, `mul 'text' n`, `string.padleft`, etc.) are sized before they are made, and are refused with an error if they would go over the limit. This check stays even with `--no-memory-guard`.
 - The size is an estimate. JavaScript cannot tell whether two strings are the same object, so a string used in many places is counted once per place (an overestimate). On the other hand, what V8 really uses can be up to about 2x the estimate, so leave room below the heap limit of your page or process.
-- The memory limit does not stop infinite loops or very long computations (e.g. comparing large structs). A time limit is up to the host, for example by terminating a Worker.
+- The memory limit does not stop infinite loops or very long computations (e.g. comparing large structs). Unless the script limits itself with `ttl`, a time limit is up to the host, for example by terminating a Worker.
 - Functions that contain loops, and for loops, get code that reports their live values, so code with very many loops or function calls gets somewhat slower. If you only run trusted code, translate with `--no-memory-guard` (`NativeJsOptions.MemoryGuard = false` in the library) or run with `memoryLimit: 0`.
+
+### Time limits and exceptions (since 0.7.0)
+Jyuno 1.7.0's `ttl` ~ `endttl` and `try` / `catch` / `tried`, `throw` are translated with the same results as the interpreter (output, error messages and lines).
+
+- **Programs that don't use `ttl` don't change.** Time checks are added only when the program has a `ttl`, and even then code running outside a ttl does the same work as before. (Each function gets one more copy, which is called inside a ttl.)
+- Inside a ttl, each loop iteration, each loop made with `goto` and each function call decrements a counter, and the clock is read when it runs out. (It adjusts itself to read the clock about every 0.05 ms.) So code with many loops and calls is 0–25% slower inside a ttl.
+- The interpreter checks the time on every line, but Native JS checks it only on loops and calls, so after one long built-in computation (a large sort, etc.) a few more straight-line statements may run. Code without loops or calls finishes quickly anyway, so this rarely changes the result.
+- `try`/`catch` becomes a JS try/catch. Entering and leaving costs almost nothing; throwing and catching with `throw` is about 10× faster than the interpreter, and catching a built-in error about 4× faster.
+- Memory limit, call depth and Native JS restriction errors can't be caught with `catch`, like the interpreter's `JyunoLimitException`. A `throw` without a value rethrows the error being handled with its original line.
+- Jumping with `goto` into a `try` body or a `catch` body is the same run-time error as in the interpreter (it can be caught). Jumping into a `ttl` body is not translated (see the restrictions above).
 
 ### Library
 ```cs

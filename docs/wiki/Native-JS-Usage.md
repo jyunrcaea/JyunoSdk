@@ -82,6 +82,7 @@ const result = program.run({
 | `message` | 오류 메시지 (C# 인터프리터와 같은 문장) |
 | `line` | 오류가 난 줄 (**0부터**, 알수 없으면 `-1`) |
 | `exceptionType` | .NET이었다면 날 예외 타입 이름 (`JyunoException`이면 `null`) |
+| `thrown` | 잡히지 않은 `throw`로 끝났을 때 던진 값 (`message`는 그 값을 문자열로 바꾼 것, 0.7.0부터) |
 | `output` | `write`를 주지 않았을 때 모은 출력 |
 
 ### 브라우저에서
@@ -122,7 +123,7 @@ const result = program.run({
 
 | `program.runtime` | 용도 |
 | --- | --- |
-| `JyunoError` | `throw new JyunoError('메시지')` → Jyuno 실행 오류 |
+| `JyunoError` | `throw new JyunoError('메시지')` → Jyuno 실행 오류 (스크립트의 `catch`로 잡을수 있음, 0.7.0부터) |
 | `JDouble` | 정수 값을 가진 실수(`3.0`)를 정수 `3`과 구별하는 상자 |
 | `JList`, `newArray`, `newList` | Jyuno 배열/리스트 |
 | `str`, `describe`, `typeName` | 값을 문자열로, 출력용 표현으로, 타입 이름으로 |
