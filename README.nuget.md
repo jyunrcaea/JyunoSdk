@@ -56,7 +56,7 @@ jyuno lsp                      Run the Jyuno language server (LSP) over standard
 jyuno --version                Print the version.
 
 Options:
-  --file, -file                Allow commands that work with files/directories (file.*, directory.*).
+  --file, -file                Allow commands that work with files/directories/paths (file.*, directory.*, path.*).
   --commands <group,...>       Command groups to use (console, math, file, default, all)
   --host <name,...>            (check) Names of functions/variables provided separately by the program
   --optimize, -O               (run) Turn on experimental optimizations (escape analysis, inlining). (Jyuno 1.5.2+)
@@ -90,7 +90,7 @@ Commands available only in the prompt:
 - `eval (string)`: run a string as one line of code.
 - `.input`, `.return`, `.error` (variables): change the input prompt (`>>> `), result format (`{0}`) and error format (`오류: {0}`).
 - `.remove`, `.substitute` (variables): whether remove/assign operations are allowed
-- All commands, including file commands (`file.*`, `directory.*`), can be used in the prompt.
+- All commands, including file commands (`file.*`, `directory.*`, `path.*`), can be used in the prompt.
 
 ### Check
 ```
@@ -161,11 +161,12 @@ vim.lsp.enable('jyuno')
 ## Native JS
 > The introduction, usage, restrictions, internals and research results (performance and compatibility verification) are covered in detail in the [wiki](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS) (in Korean).
 
-Translates Jyuno code to JavaScript. The generated file contains the Jyuno runtime (values, operations, console/math commands), so it runs in Node.js or a browser with no other files.
+Translates Jyuno code to JavaScript. The generated file contains the Jyuno runtime (values, operations, console/math commands, and file commands if used), so it runs in Node.js or a browser with no other files.
 Differential tests verify that it produces the same results as the interpreter (output, return value, error messages and lines), and it is much faster for code with many loops or function calls.
 Since 0.5.0, the operators of Jyuno 1.6.0 (`+`, `==`, `&&`, `?:`, `x += 1`, etc.) and struct operator functions (`func +`) are translated too. `&&`, `||`, `??` and `?:` evaluate only the side they need, like the interpreter.
 Since 0.5.1, it follows the behavior of Jyuno 1.6.2 (`[1, 2]` text for arrays/lists, arithmetic error messages, struct comparison by field name, and `console.read` returning a string).
 Since 0.6.0, JyunoSdk uses Jyuno 1.7.0. Since 0.7.0 (Jyuno 1.7.1), Native JS also translates time-limit blocks (`ttl` ~ `endttl`) and exception handling (`try` / `catch` / `tried`, `throw`). Programs that don't use `ttl` are translated to exactly the same code as before. (See [below](#time-limits-and-exceptions-since-070))
+Since 0.7.0, the file, directory and path commands of Jyuno 1.7.1 (`file.*`, `directory.*`, `path.*`) are translated too, and give the same results as the interpreter in Node.js. (See [below](#files-and-directories-since-070))
 ```
 jyuno hello.jyuno --native-js          # creates hello.js
 jyuno hello.jyuno --native-js out.js   # creates out.js
@@ -185,7 +186,6 @@ Because variables and functions are translated into fixed slots and called direc
 | Member names of a variable holding a struct value (`p.x`, `p.show`) can't be redefined with `func`/`local`/`param`/`struct` (run-time error) | `func p.show` after `p = point 1 2` |
 
 Assigning a value to a variable provided by the program (such as `console.title`) is allowed. If a computed goto target is inside a block, a `Native JS 제약` (Native JS restriction) error is raised at run time.
-The `file.*` and `directory.*` commands are not supported.
 
 ### Using the generated code
 The generated file defines the global variable `JyunoProgram` (or `module.exports` under CommonJS).
@@ -196,6 +196,7 @@ const result = program.run({
   write: (text) => process.stdout.write(text), // if omitted, output is collected into result.output
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // functions provided by the program
   memoryLimit: 256 * 1024 * 1024,          // memory limit (bytes, default 256MB, 0 = no limit, since 0.6.0)
+  files: { cwd: () => '/work' },           // file system used by file commands (defaults to Node.js fs and process, since 0.7.0)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 // when the program ends with an uncaught throw, result.thrown is the thrown value (since 0.7.0)
@@ -221,6 +222,33 @@ Jyuno 1.7.0's `ttl` ~ `endttl` and `try` / `catch` / `tried`, `throw` are transl
 - `try`/`catch` becomes a JS try/catch. Entering and leaving costs almost nothing; throwing and catching with `throw` is about 10× faster than the interpreter, and catching a built-in error about 4× faster.
 - Memory limit, call depth and Native JS restriction errors can't be caught with `catch`, like the interpreter's `JyunoLimitException`. A `throw` without a value rethrows the error being handled with its original line.
 - Jumping with `goto` into a `try` body or a `catch` body is the same run-time error as in the interpreter (it can be caught). Jumping into a `ttl` body is not translated (see the restrictions above).
+
+### Files and directories (since 0.7.0)
+Translates the path (`path.*`), file (`file.*`) and directory (`directory.*`) commands of Jyuno 1.7.1. As with the interpreter, file commands must be allowed when translating. (`--file` on the command line; in the library, `GetGlobals()` of a `Runtime` with `AddJyunoCommandType.File`)
+```
+jyuno tool.jyuno --native-js --file    # creates tool.js
+node tool.js                           # reads and writes real files
+```
+
+- **Programs that don't use file commands are unchanged.** The file runtime is included only when the translated code uses these commands.
+- In Node.js, real files are handled with the synchronous `fs` API. Path handling is ported from .NET 8's `System.IO.Path`, and error messages, directory listing order and patterns (`*`, `?`), times, the read-only attribute and symbolic link handling were matched to the interpreter with differential tests on Linux. macOS follows the same Unix implementation, and Windows is matched closely to .NET's Windows implementation. (Rare error messages may differ)
+- Separator constants such as `path.sep` and `path.pathsep` read the values of the running environment (`process.platform`).
+- Where there is no `fs`, such as in a browser, `path.*` path handling still works. File operations raise a `파일 작업을 하지 못했습니다: 이 환경에서는 파일 시스템을 쓸수 없습니다. (run의 files.fs)` ("file operation failed: no file system in this environment") error that `catch` can catch.
+- Times are handled to the millisecond. (`file.copy` keeps the modified time to the millisecond)
+
+The `files` option of `run` replaces the file system and environment. Anything omitted uses Node.js `fs` and `process`.
+```js
+program.run({
+  files: {
+    fs: myFs,                  // an object with the same synchronous API as Node.js fs (readFileSync, statSync, opendirSync, etc.)
+    platform: 'linux',         // path rules: 'win32', 'darwin', 'linux', etc.
+    cwd: () => '/work',        // current directory (directory.now, base of relative paths)
+    chdir: (path) => { /* directory.cd */ },
+    env: { TMPDIR: '/tmp/' },  // environment variables read by path.temp
+  },
+});
+program.run({ files: false }); // doesn't register file commands ("does not exist" errors, as if the interpreter didn't allow them)
+```
 
 ### Library
 ```cs

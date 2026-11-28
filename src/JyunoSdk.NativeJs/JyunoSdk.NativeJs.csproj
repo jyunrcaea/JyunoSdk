@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Runtime\jyuno-runtime.js" LogicalName="JyunoSdk.NativeJs.jyuno-runtime.js" />
+    <EmbeddedResource Include="Runtime\jyuno-runtime-files.js" LogicalName="JyunoSdk.NativeJs.jyuno-runtime-files.js" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(JyunoSource)' == ''">

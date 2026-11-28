@@ -1,6 +1,6 @@
 # Native JS
 
-**Native JS**는 Jyuno 코드를 **JavaScript로 변환**하는 기능입니다. 만들어진 `.js` 파일 하나에 Jyuno 런타임(값, 연산, `console`·`math` 명령어)이 모두 들어 있어서, 다른 파일이나 .NET 없이 **Node.js와 브라우저에서 바로 실행**됩니다.
+**Native JS**는 Jyuno 코드를 **JavaScript로 변환**하는 기능입니다. 만들어진 `.js` 파일 하나에 Jyuno 런타임(값, 연산, `console`·`math` 명령어, 쓴다면 `path`·`file`·`directory` 명령어)이 모두 들어 있어서, 다른 파일이나 .NET 없이 **Node.js와 브라우저에서 바로 실행**됩니다.
 
 ```
 $ jyuno fib.jyuno --native-js

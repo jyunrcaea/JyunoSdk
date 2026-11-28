@@ -55,7 +55,7 @@ jyuno lsp                      Jyuno 언어 서버(LSP)를 표준 입출력으�
 jyuno --version                버전을 출력합니다.
 
 옵션:
-  --file, -file                파일/디렉터리를 다루는 명령어(file.*, directory.*)를 허용합니다.
+  --file, -file                파일/디렉터리/경로를 다루는 명령어(file.*, directory.*, path.*)를 허용합니다.
   --commands <묶음,...>        사용할 명령어 묶음 (console, math, file, default, all)
   --host <이름,...>            (check) 프로그램이 따로 제공하는 함수/변수 이름
   --optimize, -O               (실행) 실험적 최적화(탈출 분석, 인라이닝)를 켭니다. (Jyuno 1.5.2부터)
@@ -89,7 +89,7 @@ jyuno --version                버전을 출력합니다.
 - `eval (문자열)` : 문자열을 한 줄의 코드로 실행합니다.
 - `.input`, `.return`, `.error` (변수) : 입력 표시(`>>> `), 결과 서식(`{0}`), 오류 서식(`오류: {0}`)을 바꿀수 있습니다.
 - `.remove`, `.substitute` (변수) : 삭제/대입 연산 허용 여부
-- 프롬프트에서는 파일 명령어(`file.*`, `directory.*`)를 포함한 모든 명령어를 쓸수 있습니다.
+- 프롬프트에서는 파일 명령어(`file.*`, `directory.*`, `path.*`)를 포함한 모든 명령어를 쓸수 있습니다.
 
 ### 검사
 ```
@@ -159,11 +159,12 @@ vim.lsp.enable('jyuno')
 ## Native JS
 > 소개, 사용법, 제약, 동작 원리, 연구 결과(성능과 호환성 검증)는 [위키](https://github.com/jyunrcaea/JyunoSdk/wiki/Native-JS)에 자세히 정리되어 있습니다.
 
-Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno 런타임(값, 연산, console/math 명령어)이 들어 있어서, 다른 파일 없이 Node.js나 브라우저에서 실행됩니다.
+Jyuno 코드를 JavaScript로 변환합니다. 만들어진 파일에는 Jyuno 런타임(값, 연산, console/math 명령어, 쓴다면 파일 명령어)이 들어 있어서, 다른 파일 없이 Node.js나 브라우저에서 실행됩니다.
 인터프리터와 같은 결과(출력, 반환값, 오류 메시지와 줄)를 내도록 차등 테스트로 검증했고, 반복문이나 함수 호출이 많은 코드에서 훨씬 빠릅니다.
 0.5.0부터 Jyuno 1.6.0의 연산자(`+`, `==`, `&&`, `?:`, `x += 1` 등)와 구조체의 연산자 함수(`func +`)도 변환합니다. `&&`, `||`, `??`, `?:`는 인터프리터처럼 필요한 쪽만 계산합니다.
 0.5.1부터 Jyuno 1.6.2의 동작(배열/리스트의 `[1, 2]` 문자열, 사칙연산 오류 메시지, 필드 이름으로 하는 구조체 비교, 문자열을 돌려주는 `console.read`)을 따릅니다.
 0.6.0부터 Jyuno 1.7.0을 사용합니다. 0.7.0부터(Jyuno 1.7.1) 시간 제한 블록(`ttl` ~ `endttl`)과 예외 처리(`try` / `catch` / `tried`, `throw`)도 변환합니다. ttl을 쓰지 않는 프로그램은 전과 똑같은 코드로 변환됩니다. ([아래](#시간-제한과-예외-처리-070부터))
+0.7.0부터 Jyuno 1.7.1의 파일, 디렉토리, 경로 명령어(`file.*`, `directory.*`, `path.*`)도 변환합니다. Node.js에서 인터프리터와 같은 결과를 냅니다. ([아래](#파일과-디렉토리-070부터))
 ```
 jyuno hello.jyuno --native-js          # hello.js 생성
 jyuno hello.jyuno --native-js out.js   # out.js 생성
@@ -183,7 +184,6 @@ node hello.js                          # 표준 입출력으로 실행
 | 구조체 값을 담은 변수의 멤버 이름(`p.x`, `p.show`)을 `func`/`local`/`param`/`struct`로 다시 정의할수 없음 (실행 중 오류) | `p = point 1 2` 다음의 `func p.show` |
 
 프로그램이 제공하는 변수(`console.title` 등)에 값을 대입하는건 허용됩니다. 계산된 goto 대상이 블록 안쪽이라면 실행 중에 `Native JS 제약` 오류가 납니다.
-`file.*`, `directory.*` 명령어는 지원하지 않습니다.
 
 ### 만들어진 코드 사용하기
 만들어진 파일은 전역 변수 `JyunoProgram`(CommonJS라면 `module.exports`)을 정의합니다.
@@ -194,6 +194,7 @@ const result = program.run({
   write: (text) => process.stdout.write(text), // 생략하면 result.output으로 모아서 돌려줌
   host: { 'text.upper': (args) => String(args[0]).toUpperCase() }, // 프로그램이 제공하는 함수
   memoryLimit: 256 * 1024 * 1024,          // 메모리 한도 (바이트, 기본 256MB, 0은 제한 없음, 0.6.0부터)
+  files: { cwd: () => '/work' },           // 파일 명령어가 쓸 파일 시스템 (생략하면 Node.js의 fs와 process, 0.7.0부터)
 });
 // result: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
 // 잡히지 않은 throw로 끝나면 result.thrown에 던진 값 (0.7.0부터)
@@ -219,6 +220,33 @@ Jyuno 1.7.0의 `ttl` ~ `endttl`과 `try` / `catch` / `tried`, `throw`를 인터�
 - `try`/`catch`는 JS의 try/catch로 바꿉니다. 들어가고 나오는 비용이 거의 없고, `throw`로 던지고 잡는 것은 인터프리터보다 약 10배, 내장 함수 오류를 잡는 것은 약 4배 빠릅니다.
 - 메모리 한도, 호출 깊이, Native JS 제약 오류는 인터프리터의 `JyunoLimitException`처럼 `catch`로 잡을수 없습니다. 값 없는 `throw`는 처리중인 오류를 오류가 난 줄 그대로 다시 던집니다.
 - `goto`로 `try` 본문이나 `catch` 본문 안쪽에 들어가려고 하면 인터프리터와 같은 오류(`catch`로 잡을수 있음)가 납니다. `goto`로 `ttl` 본문 안쪽에 들어가는 것은 변환하지 않습니다. (위 제약)
+
+### 파일과 디렉토리 (0.7.0부터)
+Jyuno 1.7.1의 경로(`path.*`), 파일(`file.*`), 디렉토리(`directory.*`) 명령어를 변환합니다. 인터프리터처럼 파일 명령어를 허용하고 변환해야 합니다. (명령줄은 `--file`, 라이브러리는 `AddJyunoCommandType.File`을 켠 `Runtime`의 `GetGlobals()`)
+```
+jyuno tool.jyuno --native-js --file    # tool.js 생성
+node tool.js                           # 실제 파일을 읽고 씀
+```
+
+- **파일 명령어를 쓰지 않는 프로그램은 바뀌지 않습니다.** 파일 런타임은 변환한 코드가 이 명령어를 쓸 때만 들어갑니다.
+- Node.js에서는 `fs`의 동기 API로 실제 파일을 다룹니다. 경로 계산은 .NET 8의 `System.IO.Path`를 옮겼고, 오류 메시지, 디렉토리 목록의 순서와 패턴(`*`, `?`), 시간 값, 읽기 전용 속성, 심볼릭 링크 처리까지 리눅스에서 인터프리터와 차등 테스트로 맞췄습니다. macOS는 같은 Unix 구현을 따르고, 윈도우는 .NET의 Windows 구현과 비슷하게 맞췄습니다. (드문 오류 메시지는 다를수 있음)
+- `path.sep`, `path.pathsep` 같은 구분자 상수는 실행하는 환경(`process.platform`)의 값을 읽습니다.
+- 브라우저처럼 `fs`가 없는 곳에서도 `path.*`의 경로 계산은 됩니다. 파일 작업은 `catch`로 잡을수 있는 `파일 작업을 하지 못했습니다: 이 환경에서는 파일 시스템을 쓸수 없습니다. (run의 files.fs)` 오류가 납니다.
+- 시간은 밀리초까지 다룹니다. (`file.copy`는 수정한 시간을 밀리초까지 그대로 옮김)
+
+`run`의 `files` 옵션으로 파일 시스템과 환경을 바꿀수 있습니다. 생략한 것은 Node.js의 `fs`와 `process`를 씁니다.
+```js
+program.run({
+  files: {
+    fs: myFs,                  // Node.js의 fs와 같은 동기 API(readFileSync, statSync, opendirSync 등)를 가진 객체
+    platform: 'linux',         // 경로 규칙: 'win32', 'darwin', 'linux' 등
+    cwd: () => '/work',        // 현재 디렉토리 (directory.now, 상대 경로의 기준)
+    chdir: (path) => { /* directory.cd */ },
+    env: { TMPDIR: '/tmp/' },  // path.temp가 읽는 환경 변수
+  },
+});
+program.run({ files: false }); // 파일 명령어를 등록하지 않음 (인터프리터에서 허용하지 않은 것처럼 "존재하지 않는 함수" 오류)
+```
 
 ### 라이브러리
 ```cs

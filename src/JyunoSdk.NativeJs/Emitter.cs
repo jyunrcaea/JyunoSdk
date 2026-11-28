@@ -225,12 +225,18 @@ sealed class Emitter
     static readonly HashSet<string> BoolResult = new() { "equal" , "less" , "greater" , "bool" , "array.contains" , "list.contains" , "list.remove" ,
         "string.equals" , "string.isnullorempty" , "string.isnullorwhitespace" , "string.contains" , "string.startswith" , "string.endswith" };
 
+    //운영체제마다 값이 다른 상수 (Jyuno 1.7.1의 path.sep 등): 변환한 머신의 값 대신 실행할때 런타임의 값을 읽음
+    static readonly HashSet<string> PlatformConstants = new() { "path.sep" , "path.altsep" , "path.pathsep" , "path.volsep" };
+    string const_value(string name , object? value) => PlatformConstants.Contains(name) ? $"{host_ref(name , "holder")}.get()" : literal(value);
+    //파일, 디렉토리, 경로 명령어 (Jyuno 1.7.1, Runtime.AddJyunoCommandType.File): 쓰는 프로그램만 런타임이 등록 (meta.files)
+    static bool is_file_command(string name) => name.StartsWith("file." , StringComparison.Ordinal) || name.StartsWith("directory." , StringComparison.Ordinal) || name.StartsWith("path." , StringComparison.Ordinal);
+
     string global_value(string name)
     {
         switch (glob(name , out object? value))
         {
             case G.Builtin or G.Func: return $"$noValue({Quote(name)})";
-            case G.Const: return literal(value);
+            case G.Const: return const_value(name , value);
             case G.Var: return $"{host_ref(name , "var")}.get()";
             default: return $"$unknownVar({Quote(name)})";
         }
@@ -736,7 +742,7 @@ sealed class Emitter
                 }
                 case G.Func: return new($"{host_ref(e.Name , "fn")}([{string.Join(", " , gen_args(cx , e.Arguments))}])");
                 case G.Var: return variable_call(cx , e , $"{host_ref(e.Name , "var")}.get()");
-                case G.Const: return variable_call(cx , e , literal(value));
+                case G.Const: return variable_call(cx , e , const_value(e.Name , value));
                 default: return new(e.Missing);
             }
         }
@@ -1507,6 +1513,9 @@ sealed class Emitter
         write("var JyunoProgram = (function () {");
         write("\"use strict\";");
         write(NativeJsCompiler.RuntimeSource.TrimEnd('\n'));
+        bool uses_files = host_refs.Values.Any(r => is_file_command(r.Name) && globals.ContainsKey(r.Name));
+        if (uses_files)
+            write(NativeJsCompiler.RuntimeFilesSource.TrimEnd('\n'));
         //구조체 클래스는 실행(run)마다 새로 만들지 않도록 프로그램 함수 밖에 둠 (여러번 실행해도 V8의 인라인 캐시가 같은 모양을 봄)
         foreach (string code in struct_classes())
             write(code);
@@ -1523,6 +1532,8 @@ sealed class Emitter
         write($"  lineMap: [{string.Join("," , body.Select(o => o.Item2))}],");
         if (has_try)
             write($"  tryRegion: [{string.Join("," , try_regions())}],");
+        if (uses_files)
+            write("  files: true,");
         write("});");
         write("})();");
         write("if (typeof module === 'object' && module && module.exports) module.exports = JyunoProgram;");
