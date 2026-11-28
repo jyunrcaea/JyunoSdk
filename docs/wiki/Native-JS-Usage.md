@@ -21,7 +21,7 @@ $ jyuno bad.jyuno --native-js
 bad.jyuno:2: 오류: Native JS 제약: 변수/함수 삭제('x =')를 쓸수 없습니다.
 bad.jyuno:3: 오류: Native JS 제약: 내장 함수/상수 'add'을/를 대입할수 없습니다.
 bad.jyuno:4: 오류: Native JS 제약: 내장 함수/상수 'mul'을/를 함수로 정의할수 없습니다.
-bad.jyuno:10: 오류: Native JS 제약: goto로 블록(if, while, repeat, for) 안쪽으로 들어갈수 없습니다.
+bad.jyuno:10: 오류: Native JS 제약: goto로 블록(if, while, repeat, for, ttl) 안쪽으로 들어갈수 없습니다.
 ```
 
 - `node hello.js`로 실행했을 때 문법 오류나 실행 오류가 나면 `hello.jyuno:3: 오류: ...` 형식으로 표준 오류에 쓰고 종료 코드 1로 끝납니다.

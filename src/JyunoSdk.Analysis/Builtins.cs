@@ -94,7 +94,7 @@ public static class Builtins
     static BuiltinSignature V(string? returns , params BuiltinParameter[] parameters) => new(parameters , returns , true);
 
     //설명 (이름 → 종류, 설명, 호출 형태)
-    static readonly Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> docs = with_more_docs(new() {
+    static readonly Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> docs = with_file_docs(with_more_docs(new() {
         ["null"] = (BuiltinKind.Constant , "값이 없음을 나타내는 상수입니다. Jyuno에서는 void 대신 null을 반환합니다." , Array.Empty<BuiltinSignature>()),
         ["true"] = (BuiltinKind.Constant , "참을 나타내는 상수입니다." , Array.Empty<BuiltinSignature>()),
         ["false"] = (BuiltinKind.Constant , "거짓을 나타내는 상수입니다." , Array.Empty<BuiltinSignature>()),
@@ -144,7 +144,7 @@ public static class Builtins
         ["directory.files"] = (BuiltinKind.Function , "디렉터리 안의 파일 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용합니다." , new[] { S("array") , S("array" , P("path" , "string")) }),
         ["directory.list"] = (BuiltinKind.Function , "디렉터리 안의 하위 디렉터리 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용합니다." , new[] { S("array") , S("array" , P("path" , "string")) }),
         ["directory.move"] = (BuiltinKind.Function , "디렉터리를 이동합니다." , new[] { S("bool" , P("source" , "string") , P("target" , "string")) }),
-    });
+    }));
 
     //Jyuno 1.4.1~1.4.2에서 추가된 난수, 컬렉션(array.*, list.*), 문자열(string.*) 함수
     static Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> with_more_docs(Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> d)
@@ -214,6 +214,73 @@ public static class Builtins
         f("string.tochararray" , "한 글자씩 나눈 문자열 배열을 반환합니다." , S("array" , t));
         f("string.charcode" , "인덱스(생략하면 0) 위치 글자의 UTF-16 코드를 반환합니다." , S("int" , t) , S("int" , t , P("index" , "int")));
         f("string.fromcharcode" , "UTF-16 코드(0 ~ 65535)들로 문자열을 만듭니다." , V("string" , P("code" , "int")));
+        return d;
+    }
+
+    //Jyuno 1.7.1에서 추가된 경로(path.*), 파일(file.*), 디렉토리(directory.*) 명령어
+    static Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> with_file_docs(Dictionary<string , (BuiltinKind Kind, string Description, BuiltinSignature[] Signatures)> d)
+    {
+        void f(string name , string description , params BuiltinSignature[] signatures) => d[name] = (BuiltinKind.Function , description , signatures);
+        void c(string name , string description) => d[name] = (BuiltinKind.Constant , description , Array.Empty<BuiltinSignature>());
+        BuiltinParameter path = P("path" , "string") , source = P("source" , "string") , target = P("target" , "string");
+        const string time = "Unix 시간(1970-01-01 UTC부터의 밀리초) 정수로 반환합니다.";
+
+        c("path.sep" , "운영체제의 경로 구분자입니다. (Windows는 \\, 그 밖에는 /)");
+        c("path.altsep" , "운영체제의 보조 경로 구분자입니다. (/)");
+        c("path.pathsep" , "환경 변수(PATH 등)에서 경로를 나누는 문자입니다. (Windows는 ;, 그 밖에는 :)");
+        c("path.volsep" , "드라이브 볼륨 구분자입니다. (Windows는 :, 그 밖에는 /)");
+        f("path.combine" , "경로 조각들을 하나로 합칩니다. 루트로 시작하는 조각이 있으면 그 앞의 조각은 버립니다. (C#의 Path.Combine)" , V("string" , path));
+        f("path.join" , "경로 조각들을 루트 여부와 관계없이 구분자로 이어붙입니다. (C#의 Path.Join)" , V("string" , path));
+        f("path.filename" , "확장자를 포함한 파일 이름을 반환합니다." , S("string" , path));
+        f("path.filenamewithoutext" , "확장자를 뺀 파일 이름을 반환합니다." , S("string" , path));
+        f("path.extension" , "'.'을 포함한 확장자를 반환합니다. 없으면 빈 문자열입니다." , S("string" , path));
+        f("path.directory" , "디렉터리 부분을 반환합니다. 루트라면 null입니다." , S("string" , path));
+        f("path.root" , "경로의 루트를 반환합니다. 상대 경로라면 빈 문자열입니다." , S("string" , path));
+        f("path.full" , "절대 경로로 바꿉니다. 기준 경로를 생략하면 현재 디렉터리를 기준으로 합니다." , S("string" , path) , S("string" , path , P("base" , "string")));
+        f("path.relative" , "기준 경로에서 대상 경로로 가는 상대 경로를 반환합니다. 기준 경로를 생략하면 현재 디렉터리를 기준으로 합니다." , S("string" , target) , S("string" , P("base" , "string") , target));
+        f("path.changeext" , "확장자를 바꿉니다. 확장자가 null이면 확장자를 제거합니다." , S("string" , path , P("extension" , "string")));
+        f("path.hasext" , "확장자가 있는지 확인합니다." , S("bool" , path));
+        f("path.isrooted" , "경로가 루트로 시작하는지 확인합니다." , S("bool" , path));
+        f("path.isfullyqualified" , "경로가 드라이브/루트까지 완전히 지정되었는지 확인합니다." , S("bool" , path));
+        f("path.endsinsep" , "경로가 디렉터리 구분자로 끝나는지 확인합니다." , S("bool" , path));
+        f("path.trimsep" , "경로 끝의 디렉터리 구분자 하나를 제거합니다. (루트는 그대로)" , S("string" , path));
+        f("path.temp" , "시스템의 임시 디렉터리 경로를 반환합니다. (구분자로 끝남)" , S("string"));
+        f("path.tempfile" , "임시 디렉터리에 빈 파일을 만들고 그 경로를 반환합니다." , S("string"));
+        f("path.randomname" , "무작위 파일/디렉터리 이름을 만듭니다. (파일을 만들지 않음)" , S("string"));
+
+        f("file.append" , "파일 끝에 내용을 이어 씁니다. 파일이 없으면 만듭니다." , S(null , path , P("content" , "string")));
+        f("file.readlines" , "파일을 줄 단위로 읽어 문자열 배열로 반환합니다. 파일이 없으면 null을 반환합니다." , S("array" , path));
+        f("file.writelines" , "배열/리스트(또는 여러 인자)의 값을 한 줄씩 파일에 씁니다. 이미 파일이 있으면 덮어씁니다." , S(null , path , P("lines" , "array|list")) , V(null , path , P("line" , "any")));
+        f("file.appendlines" , "배열/리스트(또는 여러 인자)의 값을 한 줄씩 파일 끝에 추가합니다." , S(null , path , P("lines" , "array|list")) , V(null , path , P("line" , "any")));
+        f("file.readbytes" , "파일을 바이트(0 ~ 255 정수) 배열로 읽습니다. 파일이 없으면 null을 반환합니다." , S("array" , path));
+        f("file.writebytes" , "정수 배열/리스트(또는 여러 정수 인자, 0 ~ 255)를 파일에 씁니다. 이미 파일이 있으면 덮어씁니다." , S(null , path , P("bytes" , "array|list")) , V(null , path , P("byte" , "int")));
+        f("file.appendbytes" , "정수 배열/리스트(또는 여러 정수 인자, 0 ~ 255)를 파일 끝에 추가합니다." , S(null , path , P("bytes" , "array|list")) , V(null , path , P("byte" , "int")));
+        f("file.copy" , "파일을 복사합니다. 세번째 인자가 참이면 이미 있는 파일을 덮어씁니다." , S("bool" , source , target) , S("bool" , source , target , P("overwrite" , "bool")));
+        f("file.move" , "파일을 이동하거나 이름을 바꿉니다. 세번째 인자가 참이면 이미 있는 파일을 덮어씁니다." , S("bool" , source , target) , S("bool" , source , target , P("overwrite" , "bool")));
+        f("file.replace" , "대상 파일을 원본 파일로 바꿉니다. 백업 경로를 주면 원래 대상 파일을 그곳으로 옮깁니다." , S("bool" , source , target) , S("bool" , source , target , P("backup" , "string")));
+        f("file.size" , "파일 크기(바이트)를 반환합니다." , S("int" , path));
+        f("file.touch" , "파일이 없으면 빈 파일을 만들고, 있으면 수정 시각을 지금으로 바꿉니다." , S(null , path));
+        f("file.createdtime" , "파일을 만든 시각을 " + time , S("int" , path));
+        f("file.modifiedtime" , "파일을 마지막으로 수정한 시각을 " + time , S("int" , path));
+        f("file.accessedtime" , "파일에 마지막으로 접근한 시각을 " + time , S("int" , path));
+        f("file.isreadonly" , "파일이 읽기 전용인지 확인합니다." , S("bool" , path));
+        f("file.setreadonly" , "파일의 읽기 전용 속성을 켜거나 끕니다." , S(null , path , P("readonly" , "bool")));
+
+        BuiltinParameter pattern = P("pattern" , "string" , "* 와 ? 를 쓸수 있는 이름 패턴") , recursive = P("recursive" , "bool" , "하위 디렉터리까지 찾을지");
+        BuiltinSignature[] listing = { S("array") , S("array" , path) , S("array" , path , pattern) , S("array" , path , pattern , recursive) };
+        f("directory.files" , "디렉터리 안의 파일 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용하고, 디렉터리가 없으면 false를 반환합니다." , listing);
+        f("directory.list" , "디렉터리 안의 하위 디렉터리 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용하고, 디렉터리가 없으면 false를 반환합니다." , listing);
+        f("directory.entries" , "디렉터리 안의 파일과 하위 디렉터리 경로 배열을 반환합니다. 경로를 생략하면 현재 디렉터리를 사용하고, 디렉터리가 없으면 false를 반환합니다." , listing);
+        f("directory.cd" , "현재 작업 디렉터리를 바꾸고 새 경로를 반환합니다. (프로세스 전체에 적용)" , S("string" , path));
+        f("directory.create" , "디렉터리를(필요하면 상위 디렉터리까지) 만들고 전체 경로를 반환합니다." , S("string" , path));
+        f("directory.remove" , "디렉터리를 삭제합니다. 두번째 인자가 참이면 안의 항목도 모두 삭제합니다. 디렉터리가 없었다면 false를 반환합니다." , S("bool" , path) , S("bool" , path , recursive));
+        f("directory.copy" , "디렉터리와 안의 항목을 모두 복사합니다. 세번째 인자가 참이면 이미 있는 파일을 덮어씁니다." , S("bool" , source , target) , S("bool" , source , target , P("overwrite" , "bool")));
+        f("directory.parent" , "상위 디렉터리의 전체 경로를 반환합니다. 루트라면 null입니다." , S("string" , path));
+        f("directory.root" , "경로의 루트 디렉터리를 반환합니다." , S("string" , path));
+        f("directory.isempty" , "디렉터리가 비어 있는지 확인합니다." , S("bool" , path));
+        f("directory.createdtime" , "디렉터리를 만든 시각을 " + time , S("int" , path));
+        f("directory.modifiedtime" , "디렉터리를 마지막으로 수정한 시각을 " + time , S("int" , path));
+        f("directory.accessedtime" , "디렉터리에 마지막으로 접근한 시각을 " + time , S("int" , path));
         return d;
     }
 

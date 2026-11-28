@@ -8,7 +8,7 @@ Native JS는 변수와 함수를 **미리 정해진 자리**에 두고 **직접 
 | --- | --- | --- |
 | **변수/함수 삭제** | `x =` | `Native JS 제약: 변수/함수 삭제('x =')를 쓸수 없습니다.` |
 | **내장 함수/상수와 프로그램이 제공하는 함수의 재정의·대입** | `add = 1`, `func mul`, `5 = true`, `for add 'abc'` | `Native JS 제약: 내장 함수/상수 'add'을/를 대입할수 없습니다.` |
-| **goto로 블록(if, while, repeat, for, ttl) 안쪽에 들어가기** | `goto inner` (inner가 `if` 안에 있음) | `Native JS 제약: goto로 블록(if, while, repeat, for) 안쪽으로 들어갈수 없습니다.` |
+| **goto로 블록(if, while, repeat, for, ttl) 안쪽에 들어가기** | `goto inner` (inner가 `if` 안에 있음) | `Native JS 제약: goto로 블록(if, while, repeat, for, ttl) 안쪽으로 들어갈수 없습니다.` |
 | 블록 구조 오류 (짝이 없는 `end` 등) | | 실행 전에 알려줌 ([아래](#블록-구조-오류는-실행-전에-알려줍니다)) |
 | **구조체 생성자 안에서 구조체 정의** (Jyuno 1.5.1부터) | `struct a` 안의 `struct b` | `Native JS 제약: 구조체(struct) 안에서 구조체를 정의할수 없습니다.` |
 
