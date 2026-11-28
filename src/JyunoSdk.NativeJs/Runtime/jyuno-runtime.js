@@ -42,7 +42,7 @@ function memCheck(extra) {
   MEM.next = MEM.guard ? Math.max(MEM_MIN_STEP, Math.min(live * 4, MEM.limit - live)) : Infinity;
   if (live + extra > MEM.limit) {
     MEM.next = MEM_MIN_STEP; // 오류를 잡고 계속 실행하더라도 곧 다시 잼
-    throw new JyunoError(extra > 0
+    throw new JyunoLimitError(extra > 0
       ? `메모리 한도를 넘었습니다. (한도 ${memMB(MEM.limit)}, 사용중 약 ${memMB(live)}, 새로 만들 값 약 ${memMB(extra)})`
       : `메모리 한도를 넘었습니다. (한도 ${memMB(MEM.limit)}, 사용중 약 ${memMB(live)})`);
   }
@@ -164,6 +164,18 @@ function overloaded(args, sym, again) {
 class JyunoError extends Error {
   constructor(message, netType = null) { super(message); this.netType = netType; }
 }
+// 스크립트의 catch로 잡을수 없는 오류 (Jyuno 1.7.0의 JyunoLimitException: 메모리 한도, 호출 깊이 / Native JS 제약)
+class JyunoLimitError extends JyunoError {}
+// throw (값)으로 던진 값 (Jyuno 1.7.0의 JyunoThrownException). 메시지는 잡히지 않았을 때만 만듦 (큰 리스트일수 있음)
+// 오류 줄(jyunoLine)은 변환한 코드가 직접 넘기므로 스택을 모으지 않음 ($thrown, 스택을 모으면 던지고 잡는 비용이 3배)
+class JyunoThrown extends JyunoError {
+  constructor(value, line = -1) { super(''); this.value = value; this.jyunoLine = line; }
+}
+// JyunoThrownException.Message: 문자열은 그대로, 그 밖의 값은 Values.Show
+function thrownMessage(v) {
+  if (typeof v === 'string') return v;
+  try { return show(v); } catch (e) { return '(문자열로 바꿀수 없는 값)'; }
+}
 class GrammarSignal extends Error {
   constructor(line, message) { super(message); this.line = line; }
 }
@@ -198,6 +210,45 @@ function tryReal(v) {
 }
 
 const nullError = () => new JyunoError('null을 처리할수 없습니다.');
+
+// ───────────── ttl (시간 제한 블록, Jyuno 1.7.0) ─────────────
+// 생성 코드는 ttl 블록 안과 감시용 함수 사본에서 반복 한번, 함수 호출 한번마다 카운터($tk)를 줄이고,
+// 0 아래로 내려가면 $tick이 시계를 읽음 (시계 읽기는 V8에서 약 60ns라서 매번 읽지 않음)
+// 카운터는 시계를 읽는 간격이 약 TTL_SLICE ms가 되도록 늘리고 줄임 (블록에 들어올 때마다 1부터)
+const TTL_SLICE = 0.05, TTL_MAX_BUDGET = 1 << 14;
+const clockNow = typeof performance === 'object' && performance && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
+const TTL = {
+  now: clockNow,
+  // ttl (초): 인자를 검사하고 상태를 만듦 { deadline, eff: 바깥 ttl까지 포함한 가장 빠른 제한 시각, outer }
+  open(args, outer) {
+    if (args.length === 0) throw new JyunoError('ttl 다음에는 제한 시간(초)이 와야 합니다.');
+    if (args.length > 1) throw new JyunoError('ttl 다음에는 제한 시간(초) 하나만 와야 합니다.');
+    const seconds = tryReal(args[0]);
+    if (seconds === undefined || Number.isNaN(seconds)) throw new JyunoError(`ttl의 제한 시간은 숫자(초)여야 합니다. ('${show(args[0])}')`);
+    const now = clockNow();
+    const deadline = seconds <= 0 ? now : now + seconds * 1000;
+    TTL.last = now;
+    TTL.budget = 1;
+    return { deadline, eff: outer === null ? deadline : Math.min(deadline, outer.eff), outer };
+  },
+  // 제한 시각이 지났다면 그 ttl 중 가장 바깥의 것을 던지고(그 ttl 블록이 잡음), 아니라면 다음 확인까지의 카운터
+  tick(s, now) {
+    if (now >= s.eff) {
+      let target = s;
+      for (let x = s; x !== null; x = x.outer) if (now >= x.deadline) target = x;
+      throw target;
+    }
+    const dt = now - TTL.last;
+    TTL.last = now;
+    let b = TTL.budget;
+    if (dt < TTL_SLICE) { if (b < TTL_MAX_BUDGET) b *= 2; }
+    else if (dt > 2 * TTL_SLICE) b = Math.max(1, Math.floor(b * TTL_SLICE / dt));
+    TTL.budget = b;
+    return b;
+  },
+  last: 0,
+  budget: 1,
+};
 const err = (m, t = null) => new JyunoError(m, t);
 
 // ───────────── 문자열 변환 (Convert.ToString(value, InvariantCulture)) ─────────────
@@ -1651,9 +1702,11 @@ function helpers(meta) {
       if (n > meta.lineCount) throw E('실행 위치가 스크립트의 범위를 벗어났습니다.');
       const o = n < meta.lineCount ? ownerOf(Number(n)) : -1;
       if (o !== ownerOf(line)) throw E('goto로 함수 안팎을 넘나들수 없습니다.');
-      throw E(`Native JS 제약: goto로 ${n}번 줄로 이동할수 없습니다. (같은 블록이나 바깥 블록의 레이블/줄로만 이동할수 있습니다)`, 'NativeJsRestriction');
+      // try/catch 본문 안쪽으로는 인터프리터에서도 이동할수 없음 (Jyuno 1.7.0, 잡을수 있는 오류)
+      if (n < meta.lineCount && !canEnterTry(line, Number(n))) throw E('goto로 try/catch 블록 안쪽으로 들어갈수 없습니다.');
+      throw new JyunoLimitError(`Native JS 제약: goto로 ${n}번 줄로 이동할수 없습니다. (같은 블록이나 바깥 블록의 레이블/줄로만 이동할수 있습니다)`, 'NativeJsRestriction');
     },
-    $tooDeep() { throw E('함수 호출이 너무 깊습니다. (최대 200번)'); },
+    $tooDeep() { throw new JyunoLimitError('함수 호출이 너무 깊습니다. (최대 200번)'); },
     $structSyntax() { throw E('struct 다음에는 구조체 이름 하나만 와야 합니다.'); },
     // 구조체 함수를 이름이 정해지지 않은 자리에서 부를 때: 구조체 값을 this로 묶음
     $bm(self, h) { return typeof h === 'function' ? h.bind(self) : h; },
@@ -1662,10 +1715,34 @@ function helpers(meta) {
       for (const p of path) { if (!(s instanceof JStruct)) return cur; s = s[p]; if (s === undefined || s === U) return cur; }
       return U;
     },
-    $aliasDefine(name) { throw E(`Native JS 제약: 구조체 값의 멤버 이름 '${name}'을/를 다시 정의할수 없습니다.`, 'NativeJsRestriction'); },
+    $aliasDefine(name) { throw new JyunoLimitError(`Native JS 제약: 구조체 값의 멤버 이름 '${name}'을/를 다시 정의할수 없습니다.`, 'NativeJsRestriction'); },
     // 연산자를 잘못 쓴 식, 다시 정의할수 없는 연산자 (Jyuno 1.6.0)
     $fail(message) { throw E(message); },
+    // ── try/catch, throw (Jyuno 1.7.0) ──
+    // catch로 잡을수 있는 오류: 스크립트의 오류(JyunoError)와 던진 값. 한도/제약 오류, 문법 오류(GrammarSignal), ttl의 시간 제한, 호스트의 다른 예외(출력 제한 등), JS의 스택 부족은 잡지 않음
+    $catchable(e) { return e instanceof JyunoError && !(e instanceof JyunoLimitError); },
+    // catch 변수에 넣을 값: 던진 값, 오류라면 메시지
+    $caught(e) { return e instanceof JyunoThrown ? e.value : e.message; },
+    $thrown(v, line) {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 0;
+      const e = new JyunoThrown(v, line);
+      Error.stackTraceLimit = limit;
+      return e;
+    },
+    $throwArity() { throw E('throw 다음에는 던질 값 하나만 와야 합니다.'); },
+    // ── ttl (Jyuno 1.7.0) ──
+    $TT: TTL,
   };
+  // goto로 from 줄에서 to 줄로 이동할때 try/catch 본문 안쪽으로 들어가지 않는지 (Interpreter.BlockMap.CanEnter, meta.tryRegion: 줄마다 가장 안쪽 try 줄 * 2 + catch 본문인지, 없다면 -1)
+  function canEnterTry(from, to) {
+    const region = meta.tryRegion;
+    if (!region || region[to] < 0) return true;
+    for (let r = region[from]; r >= 0; r = region[r >> 1]) {
+      if (r === region[to]) return true;
+    }
+    return false;
+  }
   // 줄이 속한 함수 줄 (meta.functions: [시작 줄, endfunc 줄] 목록, 안쪽 함수가 뒤에 옴)
   function ownerOf(line) {
     let o = -1;
@@ -1726,6 +1803,7 @@ function createProgram(factory, meta) {
    * options.memoryLimit: 스크립트가 붙잡고 있을수 있는 메모리의 대략적인 최대 크기 (바이트, 기본 256MB, 0은 제한 없음, JyunoSdk 0.6.0부터)
    *   넘으면 V8이 프로세스/탭을 끝내기 전에 JyunoError로 멈춤 (MemoryGuard로 변환한 코드만 붙잡고 있는 값을 재고, 아니라면 큰 값 하나만 확인)
    * 결과: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
+   *   잡히지 않은 throw로 끝나면 thrown: 던진 값 (JyunoSdk 0.7.0부터)
    */
   function run(options = {}) {
     let output = '';
@@ -1758,8 +1836,9 @@ function createProgram(factory, meta) {
       return done({ status: 'ok', value, text: describe(value), type: typeName(value) });
     } catch (e) {
       if (e instanceof GrammarSignal) return done({ status: 'grammar', message: e.message, line: e.line });
-      const line = errorLine(e);
+      const line = e instanceof JyunoThrown ? e.jyunoLine : errorLine(e);
       if (e && e.hostAbort) { e.jyunoLine = line; throw e; } // 출력 제한 등은 호스트가 처리 (오류 줄은 e.jyunoLine)
+      if (e instanceof JyunoThrown) return done({ status: 'error', message: thrownMessage(e.value), line, exceptionType: null, thrown: e.value });
       if (e instanceof JyunoError) return done({ status: 'error', message: e.message, line, exceptionType: e.netType });
       if (e instanceof RangeError && /string length|array length|allocation failed/i.test(e.message)) return done({ status: 'error', message: 'Insufficient memory to continue the execution of the program.', line, exceptionType: 'OutOfMemoryException' });
       if (e instanceof RangeError && /call stack/i.test(e.message)) return done({ status: 'error', message: '함수 호출이 너무 깊습니다.', line, exceptionType: 'StackOverflow' });
@@ -1800,6 +1879,6 @@ function createProgram(factory, meta) {
     return r;
   }
   // 호스트 함수를 만들때 쓰는 런타임 (값 표현과 오류)
-  const runtime = { JyunoError, JDouble, JList, JStruct, D, str, describe, typeName, tryInt, tryReal, truthy, newArray, newList, nullError };
+  const runtime = { JyunoError, JyunoThrown, JDouble, JList, JStruct, D, str, describe, typeName, tryInt, tryReal, truthy, newArray, newList, nullError };
   return { run, main, runtime, name: meta.name, lineCount: meta.lineCount };
 }

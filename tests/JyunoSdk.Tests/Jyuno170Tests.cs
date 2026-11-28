@@ -116,14 +116,14 @@ public class Jyuno170Tests
     }
 
     [Theory]
-    [InlineData("ttl 1|x = 1|endttl" , 0 , "ttl")]
-    [InlineData("try|x = 1|catch e|tried" , 0 , "try")]
-    [InlineData("throw 'x'" , 0 , "throw")]
-    public void NativeJs_RejectsTtlAndTry(string code , int line , string fragment)
+    [InlineData("ttl 1|x = 1|endttl")]
+    [InlineData("try|x = 1|catch e|tried")]
+    [InlineData("throw 'x'")]
+    public void NativeJs_CompilesTtlAndTry(string code)
     {
+        //0.7.0부터 Native JS도 ttl, try/catch, throw를 변환함 (실행 결과는 NativeJsTtlTryTests)
         var result = NativeJsCompiler.Compile(code.Split('|'));
-        Assert.False(result.Success);
-        Assert.Contains(result.Errors , e => e.Line == line && e.Message.Contains("Native JS 제약") && e.Message.Contains(fragment));
+        Assert.True(result.Success , string.Join("\n" , result.Errors.Select(e => e.Message)));
     }
 
     static string RunRepl(string input)
