@@ -146,7 +146,11 @@ public class NativeJsFileTests
         DateTime time = new(2021 , 3 , 4 , 5 , 6 , 7 , 891 , DateTimeKind.Utc);
         foreach (string entry in Directory.EnumerateFileSystemEntries(root , "*" , SearchOption.AllDirectories).Where(e => new FileInfo(e).LinkTarget is null).Order(StringComparer.Ordinal))
         {
-            File.SetLastWriteTimeUtc(entry , time);
+            //윈도우에서는 디렉토리에 File.SetLastWriteTimeUtc를 쓸수 없음 (접근 거부)
+            if (Directory.Exists(entry))
+                Directory.SetLastWriteTimeUtc(entry , time);
+            else
+                File.SetLastWriteTimeUtc(entry , time);
             time = time.AddMinutes(1);
         }
     }
@@ -306,6 +310,7 @@ public class NativeJsFileTests
                 "const b = p.run({ files: false });" +
                 "process.stdout.write(JSON.stringify([a.output, a.message, a.line, b.message]));";
             ProcessStartInfo info = new(node) { RedirectStandardOutput = true , RedirectStandardError = true };
+            info.StandardOutputEncoding = info.StandardErrorEncoding = Encoding.UTF8;
             info.ArgumentList.Add("-e");
             info.ArgumentList.Add(js);
             info.ArgumentList.Add(file);
