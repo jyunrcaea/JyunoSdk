@@ -47,13 +47,18 @@ public sealed class NativeJsResult
 /// </summary>
 public static class NativeJsCompiler
 {
-    static readonly Lazy<string> runtime_source = new(() => {
-        using Stream stream = typeof(NativeJsCompiler).Assembly.GetManifestResourceStream("JyunoSdk.NativeJs.jyuno-runtime.js")!;
+    static string resource(string name)
+    {
+        using Stream stream = typeof(NativeJsCompiler).Assembly.GetManifestResourceStream("JyunoSdk.NativeJs." + name)!;
         using StreamReader reader = new(stream , Encoding.UTF8);
         return reader.ReadToEnd().Replace("\r\n" , "\n");
-    });
+    }
+    static readonly Lazy<string> runtime_source = new(() => resource("jyuno-runtime.js"));
+    static readonly Lazy<string> runtime_files_source = new(() => resource("jyuno-runtime-files.js"));
     /// <summary>생성 코드에 포함되는 JS 런타임</summary>
     public static string RuntimeSource => runtime_source.Value;
+    /// <summary>파일, 디렉토리, 경로 명령어(file.*, directory.*, path.*)를 쓰는 프로그램에만 런타임 다음에 포함되는 부분 (0.7.0부터)</summary>
+    public static string RuntimeFilesSource => runtime_files_source.Value;
 
     static readonly Lazy<IReadOnlyDictionary<string , GlobalName>> default_globals = new(() => new Runtime(Runtime.AddJyunoCommandType.Default).GetGlobals());
     /// <summary>콘솔과 수학 명령어를 포함한 기본 전역 이름</summary>

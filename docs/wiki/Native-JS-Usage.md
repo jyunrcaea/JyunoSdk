@@ -25,7 +25,7 @@ bad.jyuno:10: 오류: Native JS 제약: goto로 블록(if, while, repeat, for, t
 ```
 
 - `node hello.js`로 실행했을 때 문법 오류나 실행 오류가 나면 `hello.jyuno:3: 오류: ...` 형식으로 표준 오류에 쓰고 종료 코드 1로 끝납니다.
-- `--commands`로 명령어 묶음을 고를수 있지만, `file.*`, `directory.*` 명령어는 Native JS에서 지원하지 않습니다. (경고를 보여줍니다)
+- `--file`(또는 `--commands`)로 명령어 묶음을 고를수 있습니다. 파일 명령어(`path.*`, `file.*`, `directory.*`)는 0.7.0부터 변환합니다. ([아래](#7-파일과-디렉토리-070부터))
 
 ## 2. 만들어진 파일 구조
 
@@ -67,6 +67,8 @@ const result = program.run({
 | `write(text)` | 출력 함수. 생략하면 출력을 모아서 `result.output`에 담음 |
 | `clear()`, `title(text)` | `console.clear`, `console.title`을 처리할 함수 (생략 가능) |
 | `host` | 프로그램이 제공하는 함수/변수 ([아래](#4-호스트-함수와-변수)) |
+| `memoryLimit` | 메모리 한도 (바이트, 기본 256MB, `0`은 제한 없음, 0.6.0부터) |
+| `files` | 파일 명령어가 쓸 파일 시스템과 환경, `false`면 파일 명령어를 등록하지 않음 ([아래](#7-파일과-디렉토리-070부터), 0.7.0부터) |
 
 ### 결과
 
@@ -176,3 +178,39 @@ else
 | Node.js 도구, 서버리스 함수 | **Native JS** |
 | 삭제(`x =`), 내장 함수 재정의를 쓰는 코드 | **인터프리터** |
 | 기준(정답) 동작이 필요할 때 | **인터프리터** — Native JS는 인터프리터와 같은 결과를 내도록 맞춘 구현 |
+
+## 7. 파일과 디렉토리 (0.7.0부터)
+
+Jyuno 1.7.1의 경로(`path.*`), 파일(`file.*`), 디렉토리(`directory.*`) 명령어도 변환합니다. 인터프리터처럼 **변환할 때 파일 명령어를 허용**해야 합니다.
+
+```
+jyuno tool.jyuno --native-js --file
+node tool.js
+```
+
+```cs
+var runtime = new Jyuno.Runtime(Jyuno.Runtime.AddJyunoCommandType.All);   // File을 포함
+var result = NativeJsCompiler.Compile(source, new NativeJsOptions { Globals = runtime.GetGlobals() });
+```
+
+- 파일 런타임은 변환한 코드가 이 명령어를 쓸 때만 들어갑니다. 쓰지 않는 프로그램은 전과 같은 코드입니다.
+- Node.js에서는 `fs`의 동기 API로 실제 파일을 읽고 씁니다. 경로 계산은 .NET 8의 `System.IO.Path`를 그대로 옮겼고, 파일 작업의 오류 메시지는 인터프리터와 같은 `파일 작업을 하지 못했습니다: ...`입니다.
+- `path.sep`, `path.altsep`, `path.pathsep`, `path.volsep`은 실행하는 환경의 값을 읽습니다. 그래서 변환한 파일 하나를 윈도우와 리눅스에서 모두 쓸수 있습니다.
+- 브라우저처럼 `fs`가 없으면 `path.*`의 경로 계산만 되고, 파일 작업은 `catch`로 잡을수 있는 오류(`... 이 환경에서는 파일 시스템을 쓸수 없습니다. (run의 files.fs)`)가 납니다.
+
+`run`의 `files` 옵션으로 파일 시스템과 환경을 바꿀수 있습니다. 생략한 것은 Node.js의 `fs`와 `process`를 씁니다.
+
+| `files`의 속성 | 설명 |
+| --- | --- |
+| `fs` | Node.js의 `fs`와 같은 동기 API(`readFileSync`, `writeFileSync`, `statSync`, `lstatSync`, `opendirSync`, `renameSync` 등)를 가진 객체. `null`이면 파일 시스템 없음 |
+| `platform` | 경로 규칙 (`'win32'`, `'darwin'`, `'linux'` 등, 기본은 `process.platform`) |
+| `cwd()` | 현재 디렉토리 (`directory.now`, 상대 경로의 기준) |
+| `chdir(path)` | `directory.cd`가 부르는 함수 |
+| `env` | 환경 변수 (`path.temp`의 `TMPDIR`, 윈도우의 `TMP`/`TEMP` 등) |
+
+```js
+// 경로 계산만 쓰는 브라우저 예: 윈도우 경로 규칙으로
+program.run({ files: { fs: null, platform: 'win32', cwd: () => 'C:\\work' } });
+// 파일 명령어를 막기: 인터프리터에서 허용하지 않은 것처럼 "존재하지 않는 함수/변수/명령어" 오류
+program.run({ files: false });
+```

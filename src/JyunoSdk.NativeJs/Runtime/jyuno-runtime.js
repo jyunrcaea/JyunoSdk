@@ -1644,6 +1644,7 @@ function addMath(host) {
   for (const k of Object.keys(mathConstants)) host.set(k, { kind: 'const', value: mathConstants[k] });
 }
 
+
 // ───────────── 생성 코드가 쓰는 도우미 ─────────────
 const R = { U, JDouble, JList, JConst, Early, EARLY_NULL, JStruct, copyValue, own, equalS2, truthy, forItems, repeatCount, add2, sub2, mul2, div2, mod2, equal2, less2, greater2, and2, or2, not1, length1, add3, mul3,
   opEq, opNe, opLt, opGt, opLe, opGe, opXor, opShl, opShr, opNeg, opPlus, opNot, opCom };
@@ -1800,6 +1801,9 @@ function createProgram(factory, meta) {
    * options.write(text): 출력 (기본: 모아서 output으로 돌려줌)
    * options.input: console.readline/console.read가 읽을 문자열, 또는 options.readLine()/options.read()
    * options.host: 추가 호스트 { 이름: 함수(args) | { kind: 'func', fn } | { kind: 'var', get, set } | { kind: 'const', value } }
+   * options.files: 파일/디렉토리/경로 명령어(file.*, directory.*, path.*, JyunoSdk 0.7.0부터)가 쓸 파일 시스템
+   *   { fs: Node.js의 fs와 같은 동기 API, platform: 'linux' | 'darwin' | 'win32', cwd(), chdir(path), env: 환경 변수 } (생략한 것은 Node.js의 fs와 process)
+   *   false라면 이 명령어들을 등록하지 않음 (스크립트가 쓰면 없는 명령어 오류)
    * options.memoryLimit: 스크립트가 붙잡고 있을수 있는 메모리의 대략적인 최대 크기 (바이트, 기본 256MB, 0은 제한 없음, JyunoSdk 0.6.0부터)
    *   넘으면 V8이 프로세스/탭을 끝내기 전에 JyunoError로 멈춤 (MemoryGuard로 변환한 코드만 붙잡고 있는 값을 재고, 아니라면 큰 값 하나만 확인)
    * 결과: { status: 'ok' | 'error' | 'grammar', value, text, type, message, line, exceptionType, output }
@@ -1818,6 +1822,8 @@ function createProgram(factory, meta) {
     const host = new Map();
     addConsole(host, io);
     addMath(host);
+    // 파일, 디렉토리, 경로 (Jyuno 1.7.1): 변환한 코드가 쓸 때만 (addFiles는 jyuno-runtime-files.js), options.files: false라면 등록하지 않음 (없는 명령어 오류)
+    if (meta.files && options.files !== false) addFiles(host, options);
     // 프로그램이 추가한 함수에는 구조체 값의 복사본을 넘김 (C#의 StructValue와 같음)
     const ownArgs = (fn) => (args) => fn(args.map(own));
     for (const [name, e] of Object.entries(options.host ?? {})) host.set(name, typeof e === 'function' ? { kind: 'func', fn: ownArgs(e) } : e && e.kind === 'func' ? { ...e, fn: ownArgs(e.fn) } : e);
